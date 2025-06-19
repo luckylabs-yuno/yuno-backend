@@ -3,6 +3,8 @@ cat > .gitignore << EOL
 # Environment variables
 .env
 *.env
+!.env.example
+
 
 # Python
 __pycache__/
