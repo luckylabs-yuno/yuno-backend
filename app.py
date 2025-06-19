@@ -44,44 +44,12 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = JWT_SECRET
 
 # CORS configuration - Dynamic based on registered domains
-def get_allowed_origins():
-    """Get allowed origins from database dynamically"""
-    try:
-        from services.domain_service import DomainService
-        domain_service = DomainService()
-        domains = domain_service.get_all_registered_domains()
-        origins = []
-        for domain in domains:
-            origins.extend([
-                f"https://{domain}",
-                f"https://www.{domain}",
-                f"http://{domain}",  # For development
-                f"http://www.{domain}"
-            ])
-        # Add localhost for development
-        origins.extend([
-            "http://localhost:3000",
-            "http://localhost:8000",
-            "http://127.0.0.1:3000"
-        ])
-        return origins
-    except Exception as e:
-        logging.error(f"Error getting allowed origins: {e}")
-        return ["*"]  # Fallback, but not ideal for production
+CORS(app, 
+     origins=["*"],  # Allow all for now - fix later
+     methods=['POST', 'GET', 'OPTIONS'],
+     allow_headers=['Content-Type', 'Authorization'],
+     supports_credentials=False)
 
-# Initialize CORS with fallback
-try:
-    allowed_origins = get_allowed_origins()
-    CORS(app, 
-         origins=allowed_origins,
-         methods=['POST', 'GET', 'OPTIONS'],
-         allow_headers=['Content-Type', 'Authorization'])
-except Exception as e:
-    logging.warning(f"Could not set dynamic CORS origins, using fallback: {e}")
-    CORS(app, 
-         origins=["*"],
-         methods=['POST', 'GET', 'OPTIONS'],
-         allow_headers=['Content-Type', 'Authorization'])
 
 # Rate limiter setup
 limiter = Limiter(
@@ -144,6 +112,83 @@ def internal_error_handler(e):
         "error": "Internal server error",
         "message": "Something went wrong on our end"
     }), 500
+
+@app.route('/widget/authenticate', methods=['POST', 'OPTIONS'])
+def authenticate_widget():
+    """Widget authentication endpoint"""
+    
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response
+    
+    try:
+        data = request.get_json()
+        
+        # Basic validation
+        if not data:
+            return jsonify({"error": "Invalid request"}), 400
+        
+        site_id = data.get('site_id')
+        domain = data.get('domain')
+        nonce = data.get('nonce')
+        
+        if not site_id or not domain or not nonce:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        # For now, allow test123 and any .vercel.app or .github.io domain
+        if site_id == 'test123' and (domain.endswith('.vercel.app') or domain.endswith('.github.io') or domain == 'example.com'):
+            
+            import jwt
+            import time
+            
+            jwt_secret = os.getenv('JWT_SECRET', 'fallback-secret-key')
+            
+            payload = {
+                'site_id': site_id,
+                'domain': domain,
+                'nonce': nonce,
+                'timestamp': time.time(),
+                'plan_type': 'free',
+                'iat': time.time(),
+                'exp': time.time() + 3600,
+                'aud': 'yuno-widget',
+                'iss': 'yuno-api'
+            }
+            
+            token = jwt.encode(payload, jwt_secret, algorithm='HS256')
+            
+            response = jsonify({
+                "token": token,
+                "expires_in": 3600,
+                "rate_limits": {
+                    "requests_per_minute": 30,
+                    "requests_per_hour": 200,
+                    "requests_per_day": 500
+                },
+                "site_config": {
+                    "theme": "dark",
+                    "custom_config": {}
+                }
+            })
+            
+            # Add CORS headers
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+            return response
+        else:
+            response = jsonify({"error": "Site not authorized"})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, 404
+        
+    except Exception as e:
+        logging.error(f"Authentication error: {str(e)}")
+        response = jsonify({"error": "Authentication failed", "message": str(e)})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 500
 
 if __name__ == '__main__':
     app.run(debug=os.getenv('FLASK_ENV') == 'development', host='0.0.0.0', port=5000)
