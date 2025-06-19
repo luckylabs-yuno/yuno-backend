@@ -46,9 +46,10 @@ app.config['SECRET_KEY'] = JWT_SECRET
 # CORS configuration - Dynamic based on registered domains
 def get_allowed_origins():
     """Get allowed origins from database dynamically"""
-    from services.domain_service import get_all_registered_domains
     try:
-        domains = get_all_registered_domains()
+        from services.domain_service import DomainService
+        domain_service = DomainService()
+        domains = domain_service.get_all_registered_domains()
         origins = []
         for domain in domains:
             origins.extend([
@@ -68,10 +69,19 @@ def get_allowed_origins():
         logging.error(f"Error getting allowed origins: {e}")
         return ["*"]  # Fallback, but not ideal for production
 
-CORS(app, 
-     origins=get_allowed_origins(),
-     methods=['POST', 'GET', 'OPTIONS'],
-     allow_headers=['Content-Type', 'Authorization'])
+# Initialize CORS with fallback
+try:
+    allowed_origins = get_allowed_origins()
+    CORS(app, 
+         origins=allowed_origins,
+         methods=['POST', 'GET', 'OPTIONS'],
+         allow_headers=['Content-Type', 'Authorization'])
+except Exception as e:
+    logging.warning(f"Could not set dynamic CORS origins, using fallback: {e}")
+    CORS(app, 
+         origins=["*"],
+         methods=['POST', 'GET', 'OPTIONS'],
+         allow_headers=['Content-Type', 'Authorization'])
 
 # Rate limiter setup
 limiter = Limiter(
