@@ -364,7 +364,7 @@ def rewrite_query_with_context(history: List[dict], latest: str) -> str:
 
         prompt = REWRITER_PROMPT.format(history=chat_log, latest=latest)
 
-        response = openai.chat.completions.create(
+        response = openai_client.chat.completions.create(
             model="gpt-4o-mini-2024-07-18",  # Use same model as main chat
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
@@ -946,7 +946,7 @@ def debug_ask_simple():
             debug_steps.append("5. ✅ OpenAI key set")
             
             # Test with a simple completion
-            test_response = openai.chat.completions.create(
+            test_response = openai_client.chat.completions.create(
                 model="gpt-4o-mini-2024-07-18",
                 messages=[{"role": "user", "content": "Say 'test successful'"}],
                 max_tokens=10
