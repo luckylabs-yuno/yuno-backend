@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 import logging
 import json
+import openai
 import requests
 import re
 from datetime import datetime
@@ -13,7 +14,6 @@ from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import os
 import sentry_sdk
-from openai import OpenAI, RateLimitError, BadRequestError
 
 chat_bp = Blueprint('chat', __name__)
 logger = logging.getLogger(__name__)
@@ -24,24 +24,15 @@ domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
 
-
 # Environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MIXPANEL_TOKEN = os.getenv("MIXPANEL_TOKEN")
 
-
 # Supabase function URL for semantic search
 SUPABASE_FUNCTION_URL = f"{SUPABASE_URL}/rest/v1/rpc/yunosearch"
-
-# Clear any proxy environment variables that might interfere
-proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
-for var in proxy_vars:
-    if var in os.environ:
-        del os.environ[var]
-
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+openai.api_key = OPENAI_API_KEY
 
 # Initialize Mixpanel if token is available
 mp = None
@@ -235,14 +226,13 @@ ONLY JSON, Do not output anything else.
 
 # Utility Functions
 def get_embedding(text: str) -> List[float]:
+    """Generate OpenAI embedding for text"""
     try:
-        if not openai_client:
-            raise Exception("OpenAI client not initialized")
-        response = openai_client.embeddings.create(
+        embedding = openai.embeddings.create(
             input=text, 
             model="text-embedding-3-large"
         )
-        return response.data[0].embedding
+        return embedding.data[0].embedding
     except Exception as e:
         logger.error(f"Error generating embedding: {str(e)}")
         raise
@@ -371,7 +361,7 @@ def rewrite_query_with_context(history: List[dict], latest: str) -> str:
 
         prompt = REWRITER_PROMPT.format(history=chat_log, latest=latest)
 
-        response = openai_client.chat.completions.create(
+        response = openai.chat.completions.create(
             model="gpt-4o-mini-2024-07-18",  # Use same model as main chat
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
@@ -638,7 +628,7 @@ def advanced_ask_endpoint():
             })
         
         # Call OpenAI
-        completion = openai_client.chat.completions.create(
+        completion = openai.chat.completions.create(
             model="gpt-4o-mini-2024-07-18",
             messages=updated_messages,
             temperature=0.5
@@ -728,14 +718,14 @@ def advanced_ask_endpoint():
         
         return jsonify(reply_json)
         
-    except RateLimitError:
+    except openai.RateLimitError:
         logger.error("OpenAI rate limit exceeded")
         return jsonify({
             "error": "Service temporarily unavailable",
             "message": "Please try again in a moment"
         }), 503
         
-    except BadRequestError as e:
+    except openai.InvalidRequestError as e:
         logger.error(f"OpenAI invalid request: {str(e)}")
         return jsonify({
             "error": "Invalid request",
@@ -770,8 +760,6 @@ def chat_health():
 # REMOVE THE DUPLICATE SECTION AT THE BOTTOM
 # Keep only ONE set of debug endpoints - use this cleaned version:
 
-# Replace the entire debug_components function with this properly indented version:
-
 @chat_bp.route('/debug', methods=['GET'])
 def debug_components():
     """Debug endpoint to test all components and environment"""
@@ -803,7 +791,7 @@ def debug_components():
     
     # Test imports
     imports_to_test = [
-        ('openai', 'from openai import OpenAI'),
+        ('openai', 'import openai'),
         ('supabase', 'from supabase import create_client'),
         ('mixpanel', 'from mixpanel import Mixpanel'),
         ('sentry_sdk', 'import sentry_sdk'),
@@ -836,20 +824,15 @@ def debug_components():
         debug_info["services"]["redis"] = f"ERROR: {str(e)}"
         debug_info["errors"].append(f"Redis: {str(e)}")
     
-    # Test OpenAI connection (PROPERLY INDENTED)
+    # Test OpenAI connection
     try:
         if OPENAI_API_KEY:
-            if not openai_client:
-                debug_info["connections"]["openai"] = "Client not initialized"
+            import openai
+            openai.api_key = OPENAI_API_KEY
+            if OPENAI_API_KEY.startswith('sk-'):
+                debug_info["connections"]["openai"] = "API Key format OK"
             else:
-                # Test with actual API call
-                test_response = openai_client.chat.completions.create(
-                    model="gpt-4o-mini-2024-07-18",
-                    messages=[{"role": "user", "content": "Say 'test successful'"}],
-                    max_tokens=10
-                )
-                # If we get here, the API call was successful
-                debug_info["connections"]["openai"] = "API call successful"
+                debug_info["connections"]["openai"] = "Invalid API key format"
         else:
             debug_info["connections"]["openai"] = "No API key"
     except Exception as e:
@@ -948,13 +931,12 @@ def debug_ask_simple():
             if not OPENAI_API_KEY:
                 raise Exception("OPENAI_API_KEY not set")
             
-            if not openai_client:
-                raise Exception("OpenAI client not initialized")
-            
+            import openai
+            openai.api_key = OPENAI_API_KEY
             debug_steps.append("5. ✅ OpenAI key set")
             
             # Test with a simple completion
-            test_response = openai_client.chat.completions.create(
+            test_response = openai.chat.completions.create(
                 model="gpt-4o-mini-2024-07-18",
                 messages=[{"role": "user", "content": "Say 'test successful'"}],
                 max_tokens=10
