@@ -756,3 +756,490 @@ def chat_health():
         "service": "chat",
         "timestamp": datetime.utcnow().isoformat()
     })
+# Add these debug endpoints to your routes/chat.py
+
+@chat_bp.route('/debug', methods=['GET'])
+def debug_components():
+    """Debug endpoint to test all components and environment"""
+    debug_info = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "env_vars": {},
+        "imports": {},
+        "services": {},
+        "connections": {},
+        "errors": []
+    }
+    
+    # Check environment variables
+    env_vars_to_check = [
+        'SUPABASE_URL', 'SUPABASE_KEY', 'OPENAI_API_KEY', 
+        'JWT_SECRET', 'REDIS_URL', 'MIXPANEL_TOKEN', 'SENTRY_DSN'
+    ]
+    
+    for var in env_vars_to_check:
+        value = os.getenv(var)
+        if value:
+            # Mask sensitive values
+            if 'KEY' in var or 'SECRET' in var or 'DSN' in var:
+                debug_info["env_vars"][var] = f"SET (***{value[-4:]})"
+            else:
+                debug_info["env_vars"][var] = f"SET ({value[:20]}...)"
+        else:
+            debug_info["env_vars"][var] = "MISSING"
+    
+    # Test imports
+    imports_to_test = [
+        ('openai', 'import openai'),
+        ('supabase', 'from supabase import create_client'),
+        ('mixpanel', 'from mixpanel import Mixpanel'),
+        ('sentry_sdk', 'import sentry_sdk'),
+        ('redis', 'import redis')
+    ]
+    
+    for name, import_statement in imports_to_test:
+        try:
+            exec(import_statement)
+            debug_info["imports"][name] = "OK"
+        except Exception as e:
+            debug_info["imports"][name] = f"ERROR: {str(e)}"
+            debug_info["errors"].append(f"Import {name}: {str(e)}")
+    
+    # Test services initialization
+    try:
+        jwt_secret = jwt_service.secret_key
+        debug_info["services"]["jwt_service"] = "OK" if jwt_secret else "No secret key"
+    except Exception as e:
+        debug_info["services"]["jwt_service"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"JWT Service: {str(e)}")
+    
+    try:
+        if rate_limit_service.redis_client:
+            rate_limit_service.redis_client.ping()
+            debug_info["services"]["redis"] = "OK - Connected"
+        else:
+            debug_info["services"]["redis"] = "No Redis client"
+    except Exception as e:
+        debug_info["services"]["redis"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"Redis: {str(e)}")
+    
+    # Test OpenAI connection
+    try:
+        if OPENAI_API_KEY:
+            # Test with a simple embedding call
+            import openai
+            openai.api_key = OPENAI_API_KEY
+            # Just validate the key format, don't make actual call
+            if OPENAI_API_KEY.startswith('sk-'):
+                debug_info["connections"]["openai"] = "API Key format OK"
+            else:
+                debug_info["connections"]["openai"] = "Invalid API key format"
+        else:
+            debug_info["connections"]["openai"] = "No API key"
+    except Exception as e:
+        debug_info["connections"]["openai"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"OpenAI: {str(e)}")
+    
+    # Test Supabase connection
+    try:
+        if SUPABASE_URL and SUPABASE_KEY:
+            from supabase import create_client
+            supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+            debug_info["connections"]["supabase"] = "Client created OK"
+        else:
+            debug_info["connections"]["supabase"] = "Missing credentials"
+    except Exception as e:
+        debug_info["connections"]["supabase"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"Supabase: {str(e)}")
+    
+    # Summary
+    debug_info["summary"] = {
+        "total_errors": len(debug_info["errors"]),
+        "critical_missing": [var for var, status in debug_info["env_vars"].items() 
+                           if status == "MISSING" and var in ['OPENAI_API_KEY', 'SUPABASE_URL', 'SUPABASE_KEY']],
+        "status": "READY" if len(debug_info["errors"]) == 0 else "ISSUES_FOUND"
+    }
+    
+    return jsonify(debug_info)
+
+@chat_bp.route('/debug/auth', methods=['GET'])
+def debug_auth():
+    """Debug authentication flow"""
+    return jsonify({
+        "message": "This endpoint tests if JWT service is working",
+        "jwt_service_available": hasattr(jwt_service, 'secret_key'),
+        "jwt_secret_set": bool(jwt_service.secret_key) if hasattr(jwt_service, 'secret_key') else False,
+        "test_site_id": "test123",
+        "instructions": "Use POST /widget/authenticate to get a token first"
+    })
+
+@chat_bp.route('/debug/ask-simple', methods=['POST'])
+@require_widget_token
+def debug_ask_simple():
+    """Simplified ask endpoint with detailed error logging"""
+    debug_steps = []
+    
+    try:
+        # Step 1: Get request data
+        debug_steps.append("1. Getting request data...")
+        data = request.get_json()
+        debug_steps.append(f"1. ✅ Request data received: {list(data.keys()) if data else 'None'}")
+        
+        if not data:
+            return jsonify({
+                "error": "No JSON data",
+                "debug_steps": debug_steps
+            }), 400
+        
+        # Step 2: Extract token data
+        debug_steps.append("2. Extracting token data...")
+        site_id = request.token_data.get('site_id')
+        token_domain = request.token_data.get('domain')
+        plan_type = request.token_data.get('plan_type', 'free')
+        debug_steps.append(f"2. ✅ Token data: site_id={site_id}, domain={token_domain}, plan={plan_type}")
+        
+        # Step 3: Test rate limiting
+        debug_steps.append("3. Testing rate limiting...")
+        try:
+            rate_check = rate_limit_service.check_rate_limit(site_id, plan_type)
+            debug_steps.append(f"3. ✅ Rate limit check: {rate_check}")
+        except Exception as e:
+            debug_steps.append(f"3. ❌ Rate limit error: {str(e)}")
+            return jsonify({
+                "error": "Rate limiting failed",
+                "debug_steps": debug_steps,
+                "rate_limit_error": str(e)
+            }), 500
+        
+        # Step 4: Validate required fields
+        debug_steps.append("4. Validating required fields...")
+        required_fields = ['messages', 'page_url', 'session_id']
+        missing_fields = [field for field in required_fields if field not in data]
+        
+        if missing_fields:
+            debug_steps.append(f"4. ❌ Missing fields: {missing_fields}")
+            return jsonify({
+                "error": "Missing required fields",
+                "missing_fields": missing_fields,
+                "debug_steps": debug_steps
+            }), 400
+        
+        debug_steps.append("4. ✅ All required fields present")
+        
+        # Step 5: Test OpenAI
+        debug_steps.append("5. Testing OpenAI...")
+        try:
+            if not OPENAI_API_KEY:
+                raise Exception("OPENAI_API_KEY not set")
+            
+            import openai
+            openai.api_key = OPENAI_API_KEY
+            debug_steps.append("5. ✅ OpenAI key set")
+            
+            # Test with a simple completion
+            test_response = openai.chat.completions.create(
+                model="gpt-4o-mini-2024-07-18",
+                messages=[{"role": "user", "content": "Say 'test successful'"}],
+                max_tokens=10
+            )
+            
+            debug_steps.append("5. ✅ OpenAI API call successful")
+            
+        except Exception as e:
+            debug_steps.append(f"5. ❌ OpenAI error: {str(e)}")
+            return jsonify({
+                "error": "OpenAI API failed",
+                "debug_steps": debug_steps,
+                "openai_error": str(e)
+            }), 500
+        
+        # Step 6: Return success
+        debug_steps.append("6. ✅ All tests passed!")
+        
+        return jsonify({
+            "status": "success",
+            "message": "All components working correctly",
+            "debug_steps": debug_steps,
+            "test_data": {
+                "site_id": site_id,
+                "messages_count": len(data.get("messages", [])),
+                "openai_test": test_response.choices[0].message.content if 'test_response' in locals() else "Not tested"
+            }
+        })
+        
+    except Exception as e:
+        debug_steps.append(f"❌ FATAL ERROR: {str(e)}")
+        logger.exception("Debug ask simple failed")
+        
+        return jsonify({
+            "error": "Internal server error",
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "debug_steps": debug_steps
+        }), 500
+
+@chat_bp.route('/debug/embedding', methods=['POST'])
+@require_widget_token  
+def debug_embedding():
+    """Test embedding generation specifically"""
+    try:
+        data = request.get_json()
+        test_text = data.get('text', 'test embedding')
+        
+        # Test embedding generation
+        embedding = get_embedding(test_text)
+        
+        return jsonify({
+            "status": "success",
+            "text": test_text,
+            "embedding_length": len(embedding),
+            "embedding_preview": embedding[:5],
+            "embedding_type": type(embedding).__name__
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Embedding generation failed",
+            "error_type": type(e).__name__,
+            "error_message": str(e)
+        }), 500
+
+@chat_bp.route('/debug/supabase', methods=['POST'])
+@require_widget_token
+def debug_supabase():
+    """Test Supabase connection and search"""
+    try:
+        data = request.get_json()
+        site_id = request.token_data.get('site_id')
+        test_query = data.get('query', 'test query')
+        
+        # Test embedding generation
+        embedding = get_embedding(test_query)
+        
+        # Test semantic search
+        results = semantic_search(embedding, site_id)
+        
+        return jsonify({
+            "status": "success", 
+            "query": test_query,
+            "site_id": site_id,
+            "embedding_generated": True,
+            "search_results_count": len(results),
+            "search_results": results[:2] if results else []
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Supabase search failed",
+            "error_type": type(e).__name__,
+            "error_message": str(e)
+        }), 500
+
+# ========== ADD THE NEW DEBUG ENDPOINTS HERE ==========
+
+@chat_bp.route('/debug', methods=['GET'])
+def debug_components():
+    """Debug endpoint to test all components and environment"""
+    debug_info = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "env_vars": {},
+        "imports": {},
+        "services": {},
+        "connections": {},
+        "errors": []
+    }
+    
+    # Check environment variables
+    env_vars_to_check = [
+        'SUPABASE_URL', 'SUPABASE_KEY', 'OPENAI_API_KEY', 
+        'JWT_SECRET', 'REDIS_URL', 'MIXPANEL_TOKEN', 'SENTRY_DSN'
+    ]
+    
+    for var in env_vars_to_check:
+        value = os.getenv(var)
+        if value:
+            # Mask sensitive values
+            if 'KEY' in var or 'SECRET' in var or 'DSN' in var:
+                debug_info["env_vars"][var] = f"SET (***{value[-4:]})"
+            else:
+                debug_info["env_vars"][var] = f"SET ({value[:20]}...)"
+        else:
+            debug_info["env_vars"][var] = "MISSING"
+    
+    # Test imports
+    imports_to_test = [
+        ('openai', 'import openai'),
+        ('supabase', 'from supabase import create_client'),
+        ('mixpanel', 'from mixpanel import Mixpanel'),
+        ('sentry_sdk', 'import sentry_sdk'),
+        ('redis', 'import redis')
+    ]
+    
+    for name, import_statement in imports_to_test:
+        try:
+            exec(import_statement)
+            debug_info["imports"][name] = "OK"
+        except Exception as e:
+            debug_info["imports"][name] = f"ERROR: {str(e)}"
+            debug_info["errors"].append(f"Import {name}: {str(e)}")
+    
+    # Test services initialization
+    try:
+        jwt_secret = jwt_service.secret_key
+        debug_info["services"]["jwt_service"] = "OK" if jwt_secret else "No secret key"
+    except Exception as e:
+        debug_info["services"]["jwt_service"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"JWT Service: {str(e)}")
+    
+    try:
+        if rate_limit_service.redis_client:
+            rate_limit_service.redis_client.ping()
+            debug_info["services"]["redis"] = "OK - Connected"
+        else:
+            debug_info["services"]["redis"] = "No Redis client"
+    except Exception as e:
+        debug_info["services"]["redis"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"Redis: {str(e)}")
+    
+    # Test OpenAI connection
+    try:
+        if OPENAI_API_KEY:
+            import openai
+            openai.api_key = OPENAI_API_KEY
+            if OPENAI_API_KEY.startswith('sk-'):
+                debug_info["connections"]["openai"] = "API Key format OK"
+            else:
+                debug_info["connections"]["openai"] = "Invalid API key format"
+        else:
+            debug_info["connections"]["openai"] = "No API key"
+    except Exception as e:
+        debug_info["connections"]["openai"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"OpenAI: {str(e)}")
+    
+    # Test Supabase connection
+    try:
+        if SUPABASE_URL and SUPABASE_KEY:
+            from supabase import create_client
+            supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+            debug_info["connections"]["supabase"] = "Client created OK"
+        else:
+            debug_info["connections"]["supabase"] = "Missing credentials"
+    except Exception as e:
+        debug_info["connections"]["supabase"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"Supabase: {str(e)}")
+    
+    # Summary
+    debug_info["summary"] = {
+        "total_errors": len(debug_info["errors"]),
+        "critical_missing": [var for var, status in debug_info["env_vars"].items() 
+                           if status == "MISSING" and var in ['OPENAI_API_KEY', 'SUPABASE_URL', 'SUPABASE_KEY']],
+        "status": "READY" if len(debug_info["errors"]) == 0 else "ISSUES_FOUND"
+    }
+    
+    return jsonify(debug_info)
+
+@chat_bp.route('/debug/ask-simple', methods=['POST'])
+@require_widget_token
+def debug_ask_simple():
+    """Simplified ask endpoint with detailed error logging"""
+    debug_steps = []
+    
+    try:
+        # Step 1: Get request data
+        debug_steps.append("1. Getting request data...")
+        data = request.get_json()
+        debug_steps.append(f"1. ✅ Request data received: {list(data.keys()) if data else 'None'}")
+        
+        if not data:
+            return jsonify({
+                "error": "No JSON data",
+                "debug_steps": debug_steps
+            }), 400
+        
+        # Step 2: Extract token data
+        debug_steps.append("2. Extracting token data...")
+        site_id = request.token_data.get('site_id')
+        token_domain = request.token_data.get('domain')
+        plan_type = request.token_data.get('plan_type', 'free')
+        debug_steps.append(f"2. ✅ Token data: site_id={site_id}, domain={token_domain}, plan={plan_type}")
+        
+        # Step 3: Test rate limiting
+        debug_steps.append("3. Testing rate limiting...")
+        try:
+            rate_check = rate_limit_service.check_rate_limit(site_id, plan_type)
+            debug_steps.append(f"3. ✅ Rate limit check: {rate_check}")
+        except Exception as e:
+            debug_steps.append(f"3. ❌ Rate limit error: {str(e)}")
+            return jsonify({
+                "error": "Rate limiting failed",
+                "debug_steps": debug_steps,
+                "rate_limit_error": str(e)
+            }), 500
+        
+        # Step 4: Validate required fields
+        debug_steps.append("4. Validating required fields...")
+        required_fields = ['messages', 'page_url', 'session_id']
+        missing_fields = [field for field in required_fields if field not in data]
+        
+        if missing_fields:
+            debug_steps.append(f"4. ❌ Missing fields: {missing_fields}")
+            return jsonify({
+                "error": "Missing required fields",
+                "missing_fields": missing_fields,
+                "debug_steps": debug_steps
+            }), 400
+        
+        debug_steps.append("4. ✅ All required fields present")
+        
+        # Step 5: Test OpenAI
+        debug_steps.append("5. Testing OpenAI...")
+        try:
+            if not OPENAI_API_KEY:
+                raise Exception("OPENAI_API_KEY not set")
+            
+            import openai
+            openai.api_key = OPENAI_API_KEY
+            debug_steps.append("5. ✅ OpenAI key set")
+            
+            # Test with a simple completion
+            test_response = openai.chat.completions.create(
+                model="gpt-4o-mini-2024-07-18",
+                messages=[{"role": "user", "content": "Say 'test successful'"}],
+                max_tokens=10
+            )
+            
+            debug_steps.append("5. ✅ OpenAI API call successful")
+            
+        except Exception as e:
+            debug_steps.append(f"5. ❌ OpenAI error: {str(e)}")
+            return jsonify({
+                "error": "OpenAI API failed",
+                "debug_steps": debug_steps,
+                "openai_error": str(e)
+            }), 500
+        
+        # Step 6: Return success
+        debug_steps.append("6. ✅ All tests passed!")
+        
+        return jsonify({
+            "status": "success",
+            "message": "All components working correctly",
+            "debug_steps": debug_steps,
+            "test_data": {
+                "site_id": site_id,
+                "messages_count": len(data.get("messages", [])),
+                "openai_test": test_response.choices[0].message.content if 'test_response' in locals() else "Not tested"
+            }
+        })
+        
+    except Exception as e:
+        debug_steps.append(f"❌ FATAL ERROR: {str(e)}")
+        logger.exception("Debug ask simple failed")
+        
+        return jsonify({
+            "error": "Internal server error",
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "debug_steps": debug_steps
+        }), 500
+
+# ========== END OF NEW DEBUG ENDPOINTS ==========
