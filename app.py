@@ -44,12 +44,27 @@ logging.basicConfig(
 app = Flask(__name__)
 app.config['SECRET_KEY'] = JWT_SECRET
 
-# CORS configuration - Dynamic based on registered domains
+# FIXED CORS CONFIGURATION - Allow your GitHub Pages domain
 CORS(app, 
-     origins=["*"],  # Allow all for now - fix later
-     methods=['POST', 'GET', 'OPTIONS'],
-     allow_headers=['Content-Type', 'Authorization'],
-     supports_credentials=False)
+     origins=[
+         "*",  # Allow all for development - you can restrict this later
+         "https://luckylabs-yuno.github.io",  # Your specific GitHub Pages domain
+         "https://*.github.io",  # All GitHub Pages domains
+         "https://*.vercel.app",  # Vercel domains
+         "http://localhost:*",  # Local development
+         "https://localhost:*"  # Local HTTPS
+     ],
+     methods=['POST', 'GET', 'OPTIONS', 'PUT', 'DELETE'],
+     allow_headers=[
+         'Content-Type', 
+         'Authorization', 
+         'X-Requested-With',
+         'Accept',
+         'Origin'
+     ],
+     supports_credentials=False,
+     expose_headers=['Content-Range', 'X-Content-Range']
+)
 
 # Rate limiter setup
 limiter = Limiter(
@@ -73,10 +88,21 @@ def get_site_id_key():
 app.register_blueprint(auth_bp, url_prefix='/widget')
 app.register_blueprint(chat_bp, url_prefix='/')
 
+# Add explicit CORS handling for preflight requests
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '86400')
+        return response
+
 # Health check endpoint
 @app.route('/')
 def health():
-    return jsonify({
+    response = jsonify({
         "status": "healthy",
         "service": "Yuno API",
         "version": "2.0.0",
@@ -87,39 +113,71 @@ def health():
             "Analytics Tracking",
             "Rate Limiting",
             "Semantic Search"
-        ]
+        ],
+        "cors_enabled": True
     })
+    
+    # Add CORS headers to health check too
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response
 
-# Global error handlers
+# CORS test endpoint
+@app.route('/cors-test', methods=['GET', 'POST', 'OPTIONS'])
+def cors_test():
+    """Test endpoint for CORS functionality"""
+    response = jsonify({
+        "message": "CORS test successful",
+        "method": request.method,
+        "origin": request.headers.get('Origin'),
+        "user_agent": request.headers.get('User-Agent'),
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    # Explicit CORS headers
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    
+    return response
+
+# Global error handlers with CORS headers
 @app.errorhandler(429)
 def rate_limit_handler(e):
-    return jsonify({
+    response = jsonify({
         "error": "Rate limit exceeded",
         "message": "Too many requests. Please wait before trying again.",
         "retry_after": getattr(e, 'retry_after', 60)
-    }), 429
+    })
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response, 429
 
 @app.errorhandler(401)
 def unauthorized_handler(e):
-    return jsonify({
+    response = jsonify({
         "error": "Unauthorized",
         "message": "Invalid or missing authentication token"
-    }), 401
+    })
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response, 401
 
 @app.errorhandler(403)
 def forbidden_handler(e):
-    return jsonify({
+    response = jsonify({
         "error": "Forbidden", 
         "message": "Access denied for this domain or site"
-    }), 403
+    })
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response, 403
 
 @app.errorhandler(500)
 def internal_error_handler(e):
     logging.error(f"Internal server error: {e}")
-    return jsonify({
+    response = jsonify({
         "error": "Internal server error",
         "message": "Something went wrong on our end"
-    }), 500
+    })
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response, 500
 
 # Backward compatibility endpoint (keeping the old /ask route structure)
 @app.route('/ask', methods=['POST', 'OPTIONS'])
@@ -139,7 +197,7 @@ def legacy_ask_endpoint():
     # Check for Authorization header
     auth_header = request.headers.get('Authorization', '')
     if not auth_header.startswith('Bearer '):
-        return jsonify({
+        response = jsonify({
             "error": "Authorization required",
             "message": "This endpoint now requires widget authentication. Please use the /widget/authenticate endpoint first.",
             "upgrade_guide": {
@@ -147,7 +205,9 @@ def legacy_ask_endpoint():
                 "step2": "Use the returned token in Authorization header",
                 "step3": "Make requests to /ask with Bearer token"
             }
-        }), 401
+        })
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 401
     
     # If we have a token, forward to the new endpoint
     # This allows existing widgets to work during transition
