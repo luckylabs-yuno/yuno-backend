@@ -13,7 +13,7 @@ from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import os
 import sentry_sdk
-from openai import OpenAI, RateLimitError, InvalidRequestError
+from openai import OpenAI, RateLimitError, BadRequestError
 
 chat_bp = Blueprint('chat', __name__)
 logger = logging.getLogger(__name__)
@@ -735,7 +735,7 @@ def advanced_ask_endpoint():
             "message": "Please try again in a moment"
         }), 503
         
-    except InvalidRequestError as e:
+    except BadRequestError as e:
         logger.error(f"OpenAI invalid request: {str(e)}")
         return jsonify({
             "error": "Invalid request",
