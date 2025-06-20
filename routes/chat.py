@@ -373,16 +373,14 @@ def rewrite_query_with_context(history: List[dict], latest: str) -> str:
         logger.warning("Query rewrite failed: %s", str(e))
         return latest
 
-# JWT Token Authentication Decorator with CORS support
+# JWT Token Authentication Decorator
 def require_widget_token(f):
-    """Decorator to require valid JWT token with CORS support"""
+    """Decorator to require valid JWT token"""
     @wraps(f)
-    @cross_origin()  # Add CORS support to the decorator
     def decorated_function(*args, **kwargs):
         # Handle preflight requests
         if request.method == 'OPTIONS':
-            response = jsonify({'status': 'ok'})
-            return response, 200
+            return jsonify({'status': 'ok'}), 200
             
         auth_header = request.headers.get('Authorization', '')
         
@@ -411,11 +409,9 @@ def require_widget_token(f):
     
     return decorated_function
 
-# Enhanced /ask endpoint with explicit CORS
+# Enhanced /ask endpoint
 @chat_bp.route('/ask', methods=['POST', 'OPTIONS'])
 @require_widget_token
-@cross_origin(origins="*", methods=['POST', 'OPTIONS'], 
-              allow_headers=['Content-Type', 'Authorization'])
 def advanced_ask_endpoint():
     """
     Advanced chat endpoint with JWT authentication, semantic search, 
@@ -423,8 +419,7 @@ def advanced_ask_endpoint():
     """
     # Handle preflight
     if request.method == 'OPTIONS':
-        response = jsonify({'status': 'ok'})
-        return response, 200
+        return jsonify({'status': 'ok'}), 200
     
     try:
         # Get token data from middleware
@@ -767,9 +762,8 @@ def advanced_ask_endpoint():
             "message": "Something went wrong processing your request"
         }), 500
 
-# Health check endpoint with CORS
+# Health check endpoint
 @chat_bp.route('/health', methods=['GET', 'OPTIONS'])
-@cross_origin()
 def chat_health():
     """Health check for chat service"""
     return jsonify({
@@ -778,9 +772,8 @@ def chat_health():
         "timestamp": datetime.utcnow().isoformat()
     })
 
-# Debug endpoint with CORS
+# Debug endpoint
 @chat_bp.route('/debug', methods=['GET', 'OPTIONS'])
-@cross_origin()
 def debug_components():
     """Debug endpoint to test all components and environment"""
     debug_info = {
@@ -882,7 +875,6 @@ def debug_components():
     return jsonify(debug_info)
 
 @chat_bp.route('/debug/auth', methods=['GET', 'OPTIONS'])
-@cross_origin()
 def debug_auth():
     """Debug authentication flow"""
     return jsonify({
@@ -895,7 +887,6 @@ def debug_auth():
 
 @chat_bp.route('/debug/ask-simple', methods=['POST', 'OPTIONS'])
 @require_widget_token
-@cross_origin()
 def debug_ask_simple():
     """Simplified ask endpoint with detailed error logging"""
     debug_steps = []
@@ -1001,7 +992,6 @@ def debug_ask_simple():
 
 @chat_bp.route('/debug/embedding', methods=['POST', 'OPTIONS'])
 @require_widget_token
-@cross_origin()
 def debug_embedding():
     """Test embedding generation specifically"""
     try:
@@ -1028,7 +1018,6 @@ def debug_embedding():
 
 @chat_bp.route('/debug/supabase', methods=['POST', 'OPTIONS'])
 @require_widget_token
-@cross_origin()
 def debug_supabase():
     """Test Supabase connection and search"""
     try:
