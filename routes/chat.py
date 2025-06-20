@@ -24,6 +24,7 @@ domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
 
+
 # Environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -33,6 +34,13 @@ MIXPANEL_TOKEN = os.getenv("MIXPANEL_TOKEN")
 
 # Supabase function URL for semantic search
 SUPABASE_FUNCTION_URL = f"{SUPABASE_URL}/rest/v1/rpc/yunosearch"
+
+# Clear any proxy environment variables that might interfere
+proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
+for var in proxy_vars:
+    if var in os.environ:
+        del os.environ[var]
+
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Initialize Mixpanel if token is available
