@@ -85,9 +85,12 @@ def get_site_id_key():
 # Import and register blueprints AFTER CORS setup
 from routes.auth import auth_bp
 from routes.chat import chat_bp
+from routes.onboarding import onboarding_bp  # NEW IMPORT
 
-app.register_blueprint(auth_bp, url_prefix='/widget')
-app.register_blueprint(chat_bp, url_prefix='/')
+# Register blueprints
+app.register_blueprint(onboarding_bp, url_prefix='/onboarding')  # NEW REGISTRATION - Onboarding endpoints
+app.register_blueprint(auth_bp, url_prefix='/widget')            # Widget authentication
+app.register_blueprint(chat_bp, url_prefix='/')                  # Chat endpoints
 
 # Preflight handler
 @app.before_request
@@ -102,18 +105,79 @@ def health():
     return jsonify({
         "status": "healthy",
         "service": "Yuno API",
-        "version": "2.0.0",
+        "version": "2.1.0",  # Updated version to reflect onboarding addition
         "features": [
             "Widget Authentication",
             "Advanced Chat with RAG",
             "Lead Capture",
             "Analytics Tracking",
             "Rate Limiting",
-            "Semantic Search"
+            "Semantic Search",
+            "User Onboarding"  # NEW FEATURE
         ],
         "cors_enabled": True,
+        "endpoints": {
+            "widget_auth": "/widget/*",
+            "chat": "/ask",
+            "onboarding": "/onboarding/*",  # NEW ENDPOINTS
+            "health": "/",
+            "debug": "/debug/*"
+        },
         "timestamp": datetime.utcnow().isoformat()
     })
+
+# Enhanced health check with service status
+@app.route('/health/detailed', methods=['GET', 'OPTIONS'])
+def detailed_health():
+    """Detailed health check showing all service statuses"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
+    try:
+        health_status = {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "2.1.0",
+            "services": {
+                "widget_auth": "healthy",
+                "chat": "healthy", 
+                "onboarding": "healthy",  # NEW SERVICE
+                "database": "healthy",
+                "redis": "healthy"
+            },
+            "environment": os.getenv('FLASK_ENV', 'production')
+        }
+        
+        # Test Redis connection
+        try:
+            r = redis.from_url(REDIS_URL)
+            r.ping()
+            health_status["services"]["redis"] = "healthy"
+        except:
+            health_status["services"]["redis"] = "unhealthy"
+            health_status["status"] = "degraded"
+        
+        # Test database connection (via onboarding service)
+        try:
+            from services.onboarding_service import OnboardingService
+            onboarding_service = OnboardingService()
+            stats = onboarding_service.onboarding_model.get_onboarding_stats()
+            health_status["services"]["database"] = "healthy"
+            health_status["onboarding_stats"] = stats
+        except Exception as e:
+            health_status["services"]["database"] = "unhealthy"
+            health_status["status"] = "degraded"
+            health_status["database_error"] = str(e)
+        
+        status_code = 200 if health_status["status"] == "healthy" else 503
+        return jsonify(health_status), status_code
+        
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }), 503
 
 # Debug endpoint specifically for the ask route
 @app.route('/debug/ask-test', methods=['POST', 'OPTIONS'])
@@ -151,6 +215,56 @@ def debug_ask_test():
             "error": "Debug failed",
             "error_message": str(e),
             "error_type": type(e).__name__
+        }), 500
+
+# New debug endpoint for onboarding
+@app.route('/debug/onboarding-test', methods=['GET', 'OPTIONS'])
+def debug_onboarding_test():
+    """Debug endpoint for onboarding service"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
+    try:
+        debug_info = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "onboarding_service": "available",
+            "database_connection": "unknown",
+            "endpoints": [
+                "/onboarding/send-otp",
+                "/onboarding/verify-otp", 
+                "/onboarding/complete-profile",
+                "/onboarding/setup-domain",
+                "/onboarding/upload-text",
+                "/onboarding/upload-file",
+                "/onboarding/generate-widget-script",
+                "/onboarding/verify-widget",
+                "/onboarding/state",
+                "/onboarding/health"
+            ]
+        }
+        
+        # Test onboarding service
+        try:
+            from services.onboarding_service import OnboardingService
+            onboarding_service = OnboardingService()
+            debug_info["onboarding_service"] = "initialized"
+            
+            # Test database connection
+            stats = onboarding_service.onboarding_model.get_onboarding_stats()
+            debug_info["database_connection"] = "healthy"
+            debug_info["stats"] = stats
+            
+        except Exception as e:
+            debug_info["onboarding_service"] = f"error: {str(e)}"
+            debug_info["database_connection"] = "failed"
+        
+        return jsonify(debug_info), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Onboarding debug failed",
+            "error_message": str(e),
+            "timestamp": datetime.utcnow().isoformat()
         }), 500
 
 # Global error handlers
@@ -207,6 +321,56 @@ def legacy_ask_endpoint():
     # Forward to the chat blueprint endpoint
     from routes.chat import advanced_ask_endpoint
     return advanced_ask_endpoint()
+
+# Quick API overview endpoint
+@app.route('/api', methods=['GET', 'OPTIONS'])
+def api_overview():
+    """API overview and documentation links"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
+    return jsonify({
+        "service": "Yuno API",
+        "version": "2.1.0",
+        "documentation": {
+            "widget_integration": "https://docs.helloyuno.com/widget",
+            "onboarding_api": "https://docs.helloyuno.com/onboarding",
+            "chat_api": "https://docs.helloyuno.com/chat"
+        },
+        "endpoints": {
+            "authentication": {
+                "authenticate_widget": "POST /widget/authenticate",
+                "verify_token": "POST /widget/verify",
+                "refresh_token": "POST /widget/refresh"
+            },
+            "onboarding": {
+                "send_otp": "POST /onboarding/send-otp",
+                "verify_otp": "POST /onboarding/verify-otp",
+                "complete_profile": "POST /onboarding/complete-profile",
+                "setup_domain": "POST /onboarding/setup-domain",
+                "upload_content": "POST /onboarding/upload-text",
+                "upload_file": "POST /onboarding/upload-file",
+                "generate_widget": "GET /onboarding/generate-widget-script",
+                "verify_widget": "POST /onboarding/verify-widget",
+                "get_state": "GET /onboarding/state",
+                "health_check": "GET /onboarding/health"
+            },
+            "chat": {
+                "send_message": "POST /ask"
+            },
+            "system": {
+                "health": "GET /",
+                "detailed_health": "GET /health/detailed",
+                "api_overview": "GET /api"
+            }
+        },
+        "rate_limits": {
+            "default": "1000 requests per hour",
+            "onboarding": "No limits during setup",
+            "chat": "Based on plan (30-300 per minute)"
+        },
+        "timestamp": datetime.utcnow().isoformat()
+    })
 
 if __name__ == '__main__':
     app.run(debug=os.getenv('FLASK_ENV') == 'development', host='0.0.0.0', port=5000)
