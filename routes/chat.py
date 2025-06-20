@@ -14,6 +14,7 @@ from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import os
 import sentry_sdk
+from openai import OpenAI
 
 chat_bp = Blueprint('chat', __name__)
 logger = logging.getLogger(__name__)
@@ -30,9 +31,10 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MIXPANEL_TOKEN = os.getenv("MIXPANEL_TOKEN")
 
+
 # Supabase function URL for semantic search
 SUPABASE_FUNCTION_URL = f"{SUPABASE_URL}/rest/v1/rpc/yunosearch"
-openai.api_key = OPENAI_API_KEY
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Initialize Mixpanel if token is available
 mp = None
@@ -226,13 +228,14 @@ ONLY JSON, Do not output anything else.
 
 # Utility Functions
 def get_embedding(text: str) -> List[float]:
-    """Generate OpenAI embedding for text"""
     try:
-        embedding = openai.embeddings.create(
+        if not openai_client:
+            raise Exception("OpenAI client not initialized")
+        response = openai_client.embeddings.create(
             input=text, 
             model="text-embedding-3-large"
         )
-        return embedding.data[0].embedding
+        return response.data[0].embedding
     except Exception as e:
         logger.error(f"Error generating embedding: {str(e)}")
         raise
@@ -825,19 +828,24 @@ def debug_components():
         debug_info["errors"].append(f"Redis: {str(e)}")
     
     # Test OpenAI connection
-    try:
-        if OPENAI_API_KEY:
-            import openai
-            openai.api_key = OPENAI_API_KEY
-            if OPENAI_API_KEY.startswith('sk-'):
-                debug_info["connections"]["openai"] = "API Key format OK"
-            else:
-                debug_info["connections"]["openai"] = "Invalid API key format"
+try:
+    if OPENAI_API_KEY:
+        if not openai_client:
+            debug_info["connections"]["openai"] = "Client not initialized"
         else:
-            debug_info["connections"]["openai"] = "No API key"
-    except Exception as e:
-        debug_info["connections"]["openai"] = f"ERROR: {str(e)}"
-        debug_info["errors"].append(f"OpenAI: {str(e)}")
+            # Test with actual API call
+            test_response = openai_client.chat.completions.create(
+                model="gpt-4o-mini-2024-07-18",
+                messages=[{"role": "user", "content": "Say 'test successful'"}],
+                max_tokens=10
+            )
+            # If we get here, the API call was successful
+            debug_info["connections"]["openai"] = "API call successful"
+    else:
+        debug_info["connections"]["openai"] = "No API key"
+except Exception as e:
+    debug_info["connections"]["openai"] = f"ERROR: {str(e)}"
+    debug_info["errors"].append(f"OpenAI: {str(e)}")
     
     # Test Supabase connection
     try:
