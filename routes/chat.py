@@ -1,8 +1,7 @@
 from flask import Blueprint, request, jsonify
-from flask_cors import cross_origin
 import logging
 import json
-import openai
+import os
 import requests
 import re
 from datetime import datetime
@@ -13,8 +12,10 @@ from services.domain_service import DomainService
 from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
-import os
 import sentry_sdk
+
+# Import OpenAI v1.0+ style
+from openai import OpenAI
 
 chat_bp = Blueprint('chat', __name__)
 logger = logging.getLogger(__name__)
@@ -33,7 +34,9 @@ MIXPANEL_TOKEN = os.getenv("MIXPANEL_TOKEN")
 
 # Supabase function URL for semantic search
 SUPABASE_FUNCTION_URL = f"{SUPABASE_URL}/rest/v1/rpc/yunosearch"
-openai.api_key = OPENAI_API_KEY
+
+# Initialize OpenAI client (v1.0+ style)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Initialize Mixpanel if token is available
 mp = None
@@ -43,6 +46,7 @@ if MIXPANEL_TOKEN:
         mp = Mixpanel(MIXPANEL_TOKEN)
     except ImportError:
         logger.warning("Mixpanel not available - install with: pip install mixpanel")
+
 
 # AI Prompts
 SYSTEM_PROMPT = """
@@ -229,11 +233,11 @@ ONLY JSON, Do not output anything else.
 def get_embedding(text: str) -> List[float]:
     """Generate OpenAI embedding for text"""
     try:
-        embedding = openai.embeddings.create(
+        response = openai_client.embeddings.create(
             input=text, 
             model="text-embedding-3-large"
         )
-        return embedding.data[0].embedding
+        return response.data[0].embedding
     except Exception as e:
         logger.error(f"Error generating embedding: {str(e)}")
         raise
@@ -362,8 +366,8 @@ def rewrite_query_with_context(history: List[dict], latest: str) -> str:
 
         prompt = REWRITER_PROMPT.format(history=chat_log, latest=latest)
 
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini-2024-07-18",  # Use same model as main chat
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini-2024-07-18",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
@@ -386,22 +390,20 @@ def require_widget_token(f):
         
         if not auth_header.startswith('Bearer '):
             logger.warning("Missing or invalid authorization header")
-            response = jsonify({
+            return jsonify({
                 "error": "Authorization required",
                 "message": "Valid token required for chat access"
-            })
-            return response, 401
+            }), 401
         
         token = auth_header.replace('Bearer ', '')
         payload = jwt_service.verify_token(token)
         
         if not payload:
             logger.warning("Invalid JWT token provided")
-            response = jsonify({
+            return jsonify({
                 "error": "Invalid token",
                 "message": "Token is invalid or expired"
-            })
-            return response, 401
+            }), 401
         
         # Add token payload to request for use in route
         request.token_data = payload
@@ -430,20 +432,18 @@ def advanced_ask_endpoint():
         # Check rate limits based on plan
         if not rate_limit_service.check_rate_limit(site_id, plan_type):
             logger.warning(f"Rate limit exceeded for site_id: {site_id}")
-            response = jsonify({
+            return jsonify({
                 "error": "Rate limit exceeded",
                 "message": "Too many requests. Please wait before trying again."
-            })
-            return response, 429
+            }), 429
         
         # Get request data
         data = request.get_json()
         if not data:
-            response = jsonify({
+            return jsonify({
                 "error": "Invalid request",
                 "message": "JSON data required"
-            })
-            return response, 400
+            }), 400
         
         # Log incoming request
         logger.debug("Incoming /ask request: %s", json.dumps(data, indent=2))
@@ -457,21 +457,19 @@ def advanced_ask_endpoint():
         
         # Validate required fields
         if not all([messages, page_url, session_id]):
-            response = jsonify({
+            return jsonify({
                 "error": "Missing required fields",
                 "message": "messages, page_url, and session_id are required"
-            })
-            return response, 400
+            }), 400
         
         # Additional domain validation from page_url
         request_domain = domain_service.extract_domain_from_url(page_url)
         if not domain_service.domains_match(request_domain, token_domain):
             logger.warning(f"Domain mismatch - Token: {token_domain}, Request: {request_domain}")
-            response = jsonify({
+            return jsonify({
                 "error": "Domain mismatch",
                 "message": "Request domain doesn't match token domain"
-            })
-            return response, 403
+            }), 403
         
         # Set up analytics tracking
         distinct_id = user_id or session_id or "anonymous"
@@ -642,8 +640,8 @@ def advanced_ask_endpoint():
                 "full_prompt": focused_prompt
             })
         
-        # Call OpenAI
-        completion = openai.chat.completions.create(
+        # Call OpenAI (v1.0+ syntax)
+        completion = openai_client.chat.completions.create(
             model="gpt-4o-mini-2024-07-18",
             messages=updated_messages,
             temperature=0.5
@@ -733,34 +731,34 @@ def advanced_ask_endpoint():
         
         return jsonify(reply_json)
         
-    except openai.RateLimitError:
-        logger.error("OpenAI rate limit exceeded")
-        return jsonify({
-            "error": "Service temporarily unavailable",
-            "message": "Please try again in a moment"
-        }), 503
-        
-    except openai.InvalidRequestError as e:
-        logger.error(f"OpenAI invalid request: {str(e)}")
-        return jsonify({
-            "error": "Invalid request",
-            "message": "Unable to process your message"
-        }), 400
-        
     except Exception as e:
-        sentry_sdk.capture_exception(e)
-        if mp:
-            mp.track(distinct_id, "server_error", {
-                "site_id": site_id,
-                "error": str(e),
-                "lang": lang,
-                "intent": intent_label
-            })
-        logger.exception("Exception in /ask")
-        return jsonify({
-            "error": "Internal server error",
-            "message": "Something went wrong processing your request"
-        }), 500
+        # Updated exception handling for OpenAI v1.0+
+        if "rate_limit" in str(e).lower():
+            logger.error("OpenAI rate limit exceeded")
+            return jsonify({
+                "error": "Service temporarily unavailable",
+                "message": "Please try again in a moment"
+            }), 503
+        elif "invalid" in str(e).lower():
+            logger.error(f"OpenAI invalid request: {str(e)}")
+            return jsonify({
+                "error": "Invalid request",
+                "message": "Unable to process your message"
+            }), 400
+        else:
+            sentry_sdk.capture_exception(e)
+            if mp:
+                mp.track(distinct_id, "server_error", {
+                    "site_id": site_id,
+                    "error": str(e),
+                    "lang": lang,
+                    "intent": intent_label
+                })
+            logger.exception("Exception in /ask")
+            return jsonify({
+                "error": "Internal server error",
+                "message": "Something went wrong processing your request"
+            }), 500
 
 # Health check endpoint
 @chat_bp.route('/health', methods=['GET', 'OPTIONS'])
@@ -772,7 +770,7 @@ def chat_health():
         "timestamp": datetime.utcnow().isoformat()
     })
 
-# Debug endpoint
+# Debug endpoints
 @chat_bp.route('/debug', methods=['GET', 'OPTIONS'])
 def debug_components():
     """Debug endpoint to test all components and environment"""
@@ -802,46 +800,9 @@ def debug_components():
         else:
             debug_info["env_vars"][var] = "MISSING"
     
-    # Test imports
-    imports_to_test = [
-        ('openai', 'import openai'),
-        ('supabase', 'from supabase import create_client'),
-        ('mixpanel', 'from mixpanel import Mixpanel'),
-        ('sentry_sdk', 'import sentry_sdk'),
-        ('redis', 'import redis')
-    ]
-    
-    for name, import_statement in imports_to_test:
-        try:
-            exec(import_statement)
-            debug_info["imports"][name] = "OK"
-        except Exception as e:
-            debug_info["imports"][name] = f"ERROR: {str(e)}"
-            debug_info["errors"].append(f"Import {name}: {str(e)}")
-    
-    # Test services initialization
-    try:
-        jwt_secret = jwt_service.secret_key
-        debug_info["services"]["jwt_service"] = "OK" if jwt_secret else "No secret key"
-    except Exception as e:
-        debug_info["services"]["jwt_service"] = f"ERROR: {str(e)}"
-        debug_info["errors"].append(f"JWT Service: {str(e)}")
-    
-    try:
-        if rate_limit_service.redis_client:
-            rate_limit_service.redis_client.ping()
-            debug_info["services"]["redis"] = "OK - Connected"
-        else:
-            debug_info["services"]["redis"] = "No Redis client"
-    except Exception as e:
-        debug_info["services"]["redis"] = f"ERROR: {str(e)}"
-        debug_info["errors"].append(f"Redis: {str(e)}")
-    
     # Test OpenAI connection
     try:
         if OPENAI_API_KEY:
-            import openai
-            openai.api_key = OPENAI_API_KEY
             if OPENAI_API_KEY.startswith('sk-'):
                 debug_info["connections"]["openai"] = "API Key format OK"
             else:
@@ -873,17 +834,6 @@ def debug_components():
     }
     
     return jsonify(debug_info)
-
-@chat_bp.route('/debug/auth', methods=['GET', 'OPTIONS'])
-def debug_auth():
-    """Debug authentication flow"""
-    return jsonify({
-        "message": "This endpoint tests if JWT service is working",
-        "jwt_service_available": hasattr(jwt_service, 'secret_key'),
-        "jwt_secret_set": bool(jwt_service.secret_key) if hasattr(jwt_service, 'secret_key') else False,
-        "test_site_id": "test123",
-        "instructions": "Use POST /widget/authenticate to get a token first"
-    })
 
 @chat_bp.route('/debug/ask-simple', methods=['POST', 'OPTIONS'])
 @require_widget_token
@@ -944,12 +894,10 @@ def debug_ask_simple():
             if not OPENAI_API_KEY:
                 raise Exception("OPENAI_API_KEY not set")
             
-            import openai
-            openai.api_key = OPENAI_API_KEY
             debug_steps.append("5. ✅ OpenAI key set")
             
-            # Test with a simple completion
-            test_response = openai.chat.completions.create(
+            # Test with a simple completion (v1.0+ syntax)
+            test_response = openai_client.chat.completions.create(
                 model="gpt-4o-mini-2024-07-18",
                 messages=[{"role": "user", "content": "Say 'test successful'"}],
                 max_tokens=10
@@ -988,61 +936,4 @@ def debug_ask_simple():
             "error_type": type(e).__name__,
             "error_message": str(e),
             "debug_steps": debug_steps
-        }), 500
-
-@chat_bp.route('/debug/embedding', methods=['POST', 'OPTIONS'])
-@require_widget_token
-def debug_embedding():
-    """Test embedding generation specifically"""
-    try:
-        data = request.get_json()
-        test_text = data.get('text', 'test embedding')
-        
-        # Test embedding generation
-        embedding = get_embedding(test_text)
-        
-        return jsonify({
-            "status": "success",
-            "text": test_text,
-            "embedding_length": len(embedding),
-            "embedding_preview": embedding[:5],
-            "embedding_type": type(embedding).__name__
-        })
-        
-    except Exception as e:
-        return jsonify({
-            "error": "Embedding generation failed",
-            "error_type": type(e).__name__,
-            "error_message": str(e)
-        }), 500
-
-@chat_bp.route('/debug/supabase', methods=['POST', 'OPTIONS'])
-@require_widget_token
-def debug_supabase():
-    """Test Supabase connection and search"""
-    try:
-        data = request.get_json()
-        site_id = request.token_data.get('site_id')
-        test_query = data.get('query', 'test query')
-        
-        # Test embedding generation
-        embedding = get_embedding(test_query)
-        
-        # Test semantic search
-        results = semantic_search(embedding, site_id)
-        
-        return jsonify({
-            "status": "success", 
-            "query": test_query,
-            "site_id": site_id,
-            "embedding_generated": True,
-            "search_results_count": len(results),
-            "search_results": results[:2] if results else []
-        })
-        
-    except Exception as e:
-        return jsonify({
-            "error": "Supabase search failed",
-            "error_type": type(e).__name__,
-            "error_message": str(e)
         }), 500
