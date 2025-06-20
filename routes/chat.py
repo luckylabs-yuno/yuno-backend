@@ -11,7 +11,7 @@ from services.jwt_service import JWTService
 from services.domain_service import DomainService
 from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
-from helpers import LoggingHelpers, ResponseHelpers
+from utils.helpers import LoggingHelpers, ResponseHelpers
 import os
 import sentry_sdk
 
