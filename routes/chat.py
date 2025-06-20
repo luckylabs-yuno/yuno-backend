@@ -763,6 +763,8 @@ def chat_health():
 # REMOVE THE DUPLICATE SECTION AT THE BOTTOM
 # Keep only ONE set of debug endpoints - use this cleaned version:
 
+# Replace the entire debug_components function with this properly indented version:
+
 @chat_bp.route('/debug', methods=['GET'])
 def debug_components():
     """Debug endpoint to test all components and environment"""
@@ -827,25 +829,25 @@ def debug_components():
         debug_info["services"]["redis"] = f"ERROR: {str(e)}"
         debug_info["errors"].append(f"Redis: {str(e)}")
     
-    # Test OpenAI connection
-try:
-    if OPENAI_API_KEY:
-        if not openai_client:
-            debug_info["connections"]["openai"] = "Client not initialized"
+    # Test OpenAI connection (PROPERLY INDENTED)
+    try:
+        if OPENAI_API_KEY:
+            if not openai_client:
+                debug_info["connections"]["openai"] = "Client not initialized"
+            else:
+                # Test with actual API call
+                test_response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini-2024-07-18",
+                    messages=[{"role": "user", "content": "Say 'test successful'"}],
+                    max_tokens=10
+                )
+                # If we get here, the API call was successful
+                debug_info["connections"]["openai"] = "API call successful"
         else:
-            # Test with actual API call
-            test_response = openai_client.chat.completions.create(
-                model="gpt-4o-mini-2024-07-18",
-                messages=[{"role": "user", "content": "Say 'test successful'"}],
-                max_tokens=10
-            )
-            # If we get here, the API call was successful
-            debug_info["connections"]["openai"] = "API call successful"
-    else:
-        debug_info["connections"]["openai"] = "No API key"
-except Exception as e:
-    debug_info["connections"]["openai"] = f"ERROR: {str(e)}"
-    debug_info["errors"].append(f"OpenAI: {str(e)}")
+            debug_info["connections"]["openai"] = "No API key"
+    except Exception as e:
+        debug_info["connections"]["openai"] = f"ERROR: {str(e)}"
+        debug_info["errors"].append(f"OpenAI: {str(e)}")
     
     # Test Supabase connection
     try:
