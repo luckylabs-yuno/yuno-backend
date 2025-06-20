@@ -23,6 +23,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 JWT_SECRET = os.getenv("JWT_SECRET")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+MIXPANEL_TOKEN = os.getenv("MIXPANEL_TOKEN")
 
 # Sentry setup
 if SENTRY_DSN:
@@ -49,7 +50,6 @@ CORS(app,
      methods=['POST', 'GET', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization'],
      supports_credentials=False)
-
 
 # Rate limiter setup
 limiter = Limiter(
@@ -79,7 +79,15 @@ def health():
     return jsonify({
         "status": "healthy",
         "service": "Yuno API",
-        "version": "2.0.0"
+        "version": "2.0.0",
+        "features": [
+            "Widget Authentication",
+            "Advanced Chat with RAG",
+            "Lead Capture",
+            "Analytics Tracking",
+            "Rate Limiting",
+            "Semantic Search"
+        ]
     })
 
 # Global error handlers
@@ -113,82 +121,38 @@ def internal_error_handler(e):
         "message": "Something went wrong on our end"
     }), 500
 
-@app.route('/widget/authenticate', methods=['POST', 'OPTIONS'])
-def authenticate_widget():
-    """Widget authentication endpoint"""
-    
+# Backward compatibility endpoint (keeping the old /ask route structure)
+@app.route('/ask', methods=['POST', 'OPTIONS'])
+def legacy_ask_endpoint():
+    """
+    Legacy /ask endpoint for backward compatibility
+    Redirects to the new secured endpoint
+    """
     # Handle CORS preflight
     if request.method == 'OPTIONS':
         response = jsonify({'status': 'ok'})
         response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response
     
-    try:
-        data = request.get_json()
-        
-        # Basic validation
-        if not data:
-            return jsonify({"error": "Invalid request"}), 400
-        
-        site_id = data.get('site_id')
-        domain = data.get('domain')
-        nonce = data.get('nonce')
-        
-        if not site_id or not domain or not nonce:
-            return jsonify({"error": "Missing required fields"}), 400
-        
-        # For now, allow test123 and any .vercel.app or .github.io domain
-        if site_id == 'test123' and (domain.endswith('.vercel.app') or domain.endswith('.github.io') or domain == 'example.com'):
-            
-            import jwt
-            import time
-            
-            jwt_secret = os.getenv('JWT_SECRET', 'fallback-secret-key')
-            
-            payload = {
-                'site_id': site_id,
-                'domain': domain,
-                'nonce': nonce,
-                'timestamp': time.time(),
-                'plan_type': 'free',
-                'iat': time.time(),
-                'exp': time.time() + 3600,
-                'aud': 'yuno-widget',
-                'iss': 'yuno-api'
+    # Check for Authorization header
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({
+            "error": "Authorization required",
+            "message": "This endpoint now requires widget authentication. Please use the /widget/authenticate endpoint first.",
+            "upgrade_guide": {
+                "step1": "Call /widget/authenticate with site_id and domain",
+                "step2": "Use the returned token in Authorization header",
+                "step3": "Make requests to /ask with Bearer token"
             }
-            
-            token = jwt.encode(payload, jwt_secret, algorithm='HS256')
-            
-            response = jsonify({
-                "token": token,
-                "expires_in": 3600,
-                "rate_limits": {
-                    "requests_per_minute": 30,
-                    "requests_per_hour": 200,
-                    "requests_per_day": 500
-                },
-                "site_config": {
-                    "theme": "dark",
-                    "custom_config": {}
-                }
-            })
-            
-            # Add CORS headers
-            response.headers.add('Access-Control-Allow-Origin', '*')
-            response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-            return response
-        else:
-            response = jsonify({"error": "Site not authorized"})
-            response.headers.add('Access-Control-Allow-Origin', '*')
-            return response, 404
-        
-    except Exception as e:
-        logging.error(f"Authentication error: {str(e)}")
-        response = jsonify({"error": "Authentication failed", "message": str(e)})
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        return response, 500
+        }), 401
+    
+    # If we have a token, forward to the new endpoint
+    # This allows existing widgets to work during transition
+    from routes.chat import advanced_ask_endpoint
+    return advanced_ask_endpoint()
 
 if __name__ == '__main__':
     app.run(debug=os.getenv('FLASK_ENV') == 'development', host='0.0.0.0', port=5000)
