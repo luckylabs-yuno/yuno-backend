@@ -115,17 +115,43 @@ def health():
         "timestamp": datetime.utcnow().isoformat()
     })
 
-# CORS test endpoint
-@app.route('/cors-test', methods=['GET', 'POST', 'OPTIONS'])
-def cors_test():
-    """Test endpoint for CORS functionality"""
-    return jsonify({
-        "message": "CORS test successful",
-        "method": request.method,
-        "origin": request.headers.get('Origin'),
-        "user_agent": request.headers.get('User-Agent'),
-        "timestamp": datetime.utcnow().isoformat()
-    })
+# Debug endpoint specifically for the ask route
+@app.route('/debug/ask-test', methods=['POST', 'OPTIONS'])
+def debug_ask_test():
+    """Debug version of ask endpoint"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
+    try:
+        # Basic request info
+        debug_info = {
+            "method": request.method,
+            "headers": dict(request.headers),
+            "has_json": request.is_json,
+            "content_type": request.content_type,
+            "origin": request.headers.get('Origin'),
+            "authorization": request.headers.get('Authorization', '')[:20] + "..." if request.headers.get('Authorization') else None
+        }
+        
+        # Try to get JSON data
+        try:
+            data = request.get_json()
+            debug_info["json_data"] = data
+        except Exception as e:
+            debug_info["json_error"] = str(e)
+        
+        return jsonify({
+            "status": "debug_success",
+            "debug_info": debug_info,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Debug failed",
+            "error_message": str(e),
+            "error_type": type(e).__name__
+        }), 500
 
 # Global error handlers
 @app.errorhandler(429)
