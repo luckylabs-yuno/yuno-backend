@@ -1,7 +1,6 @@
 from flask import Blueprint, request, jsonify
 import logging
 import json
-import openai
 import requests
 import re
 from datetime import datetime
@@ -14,7 +13,7 @@ from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import os
 import sentry_sdk
-from openai import OpenAI
+from openai import OpenAI, RateLimitError, InvalidRequestError
 
 chat_bp = Blueprint('chat', __name__)
 logger = logging.getLogger(__name__)
@@ -721,14 +720,14 @@ def advanced_ask_endpoint():
         
         return jsonify(reply_json)
         
-    except openai.RateLimitError:
+    except RateLimitError:
         logger.error("OpenAI rate limit exceeded")
         return jsonify({
             "error": "Service temporarily unavailable",
             "message": "Please try again in a moment"
         }), 503
         
-    except openai.InvalidRequestError as e:
+    except InvalidRequestError as e:
         logger.error(f"OpenAI invalid request: {str(e)}")
         return jsonify({
             "error": "Invalid request",
@@ -796,7 +795,7 @@ def debug_components():
     
     # Test imports
     imports_to_test = [
-        ('openai', 'import openai'),
+        ('openai', 'from openai import OpenAI'),
         ('supabase', 'from supabase import create_client'),
         ('mixpanel', 'from mixpanel import Mixpanel'),
         ('sentry_sdk', 'import sentry_sdk'),
@@ -941,8 +940,9 @@ def debug_ask_simple():
             if not OPENAI_API_KEY:
                 raise Exception("OPENAI_API_KEY not set")
             
-            import openai
-            openai.api_key = OPENAI_API_KEY
+            if not openai_client:
+                raise Exception("OpenAI client not initialized")
+            
             debug_steps.append("5. ✅ OpenAI key set")
             
             # Test with a simple completion
