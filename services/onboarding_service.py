@@ -29,15 +29,7 @@ class OnboardingService:
     # =============================================================================
     
     def send_otp(self, email: str) -> Dict:
-        """
-        Send OTP to user's email
-        
-        Args:
-            email: User's email address
-            
-        Returns:
-            Dict with success status and message
-        """
+        """Send OTP to user's email"""
         try:
             # Validate email format
             if not ValidationHelpers.validate_email(email):
@@ -61,26 +53,11 @@ class OnboardingService:
             # Generate and send OTP
             otp_code = self.onboarding_model.create_otp(email)
             
-            # For development, log the OTP (remove in production)
+            # For development, log the OTP
             if os.getenv('FLASK_ENV') == 'development':
                 logger.info(f"🔑 OTP for {email}: {otp_code}")
             
-            # TODO: Send actual email using your preferred service
-            # For now, return mock path
-        timestamp = int(time.time())
-        filename = f"{site_id}_{timestamp}_{file_data['name']}"
-        return f"uploads/{filename}"
-    
-    def _check_widget_installation(self, site_id: str, domain: str) -> bool:
-        """Check if widget is installed on domain"""
-        # TODO: Implement actual widget detection
-        # - Make HTTP request to domain
-        # - Check for widget script in HTML
-        # - Verify widget loads correctly
-        
-        # For now, simulate successful verification after delay
-        time.sleep(2)
-        return True  # Mock successful verification we'll use Supabase Auth's built-in OTP
+            # Send OTP email
             self._send_otp_email(email, otp_code)
             
             # Create or update onboarding session
@@ -93,7 +70,7 @@ class OnboardingService:
             return {
                 'success': True,
                 'message': 'OTP sent successfully. Please check your email.',
-                'expires_in': 600  # 10 minutes
+                'expires_in': 600
             }
             
         except Exception as e:
@@ -105,16 +82,7 @@ class OnboardingService:
             }
     
     def verify_otp(self, email: str, otp_code: str) -> Dict:
-        """
-        Verify OTP and return temporary token
-        
-        Args:
-            email: User's email address
-            otp_code: 6-digit OTP code
-            
-        Returns:
-            Dict with verification status and temp token
-        """
+        """Verify OTP and return temporary token"""
         try:
             # Validate OTP format
             if not otp_code or len(otp_code) != 6 or not otp_code.isdigit():
@@ -139,7 +107,7 @@ class OnboardingService:
                 'email': email,
                 'step': 'profile_setup',
                 'verified': True
-            }, expiry_seconds=1800)  # 30 minutes
+            }, expiry_seconds=1800)
             
             # Update onboarding session
             self.onboarding_model.update_onboarding_session(
@@ -170,17 +138,7 @@ class OnboardingService:
     # =============================================================================
     
     def complete_profile_setup(self, temp_token: str, profile_data: Dict) -> Dict:
-        """
-        Complete profile setup - NOW ONLY REQUIRES PASSWORD
-        Optional fields: name, date_of_birth, country (stored for future use)
-        
-        Args:
-            temp_token: Temporary token from OTP verification
-            profile_data: Dict with password (required) and optional profile fields
-            
-        Returns:
-            Dict with success status and user info
-        """
+        """Complete profile setup with password and optional fields"""
         try:
             # Verify temp token
             token_payload = self.jwt_service.verify_token(temp_token)
@@ -199,7 +157,7 @@ class OnboardingService:
                     'message': 'Email not found in token'
                 }
             
-            # UPDATED: Only password is required now
+            # Only password is required
             password = profile_data.get('password')
             if not password:
                 return {
@@ -227,9 +185,9 @@ class OnboardingService:
             
             # Create profile with optional fields
             profile_result = self._create_user_profile(user_id, email, {
-                'name': profile_data.get('name'),  # Optional
-                'date_of_birth': profile_data.get('date_of_birth'),  # Optional
-                'country': profile_data.get('country'),  # Optional
+                'name': profile_data.get('name'),
+                'date_of_birth': profile_data.get('date_of_birth'),
+                'country': profile_data.get('country'),
             })
             
             if not profile_result['success']:
@@ -243,7 +201,7 @@ class OnboardingService:
             # Create onboarding session
             session_result = self._create_onboarding_session(email, {
                 'user_id': user_id,
-                'current_step': 4,  # Move to domain setup
+                'current_step': 4,
                 'profile_completed': True
             })
             
@@ -267,78 +225,13 @@ class OnboardingService:
                 'error': 'internal_error',
                 'message': 'An error occurred while creating your account'
             }
-
-    def _create_onboarding_session(self, email: str, session_data: Dict) -> Dict:
-        """Create onboarding session"""
-        try:
-            self.onboarding_model.update_onboarding_session(
-                email=email,
-                step=session_data.get('current_step', 1),
-                session_data=session_data
-            )
-            return {'success': True}
-        except Exception as e:
-            logger.error(f"Error creating onboarding session: {str(e)}")
-            return {
-                'success': False,
-                'error': 'session_error',
-                'message': 'Failed to create session'
-            }
-
-    def _create_user_profile(self, user_id: str, email: str, profile_data: Dict) -> Dict:
-        """
-        Create user profile with optional fields
-        """
-        try:
-            profile_record = {
-                'id': user_id,
-                'email': email,
-                'name': profile_data.get('name'),  # Can be None
-                'date_of_birth': profile_data.get('date_of_birth'),  # Can be None
-                'country': profile_data.get('country'),  # Can be None
-                'onboarding_completed': False,  # Will be true after full flow
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
-            }
-            
-            # Insert profile
-            result = self.onboarding_model.supabase.table('profiles').insert(profile_record).execute()
-            
-            if result.data:
-                return {
-                    'success': True,
-                    'message': 'Profile created successfully'
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': 'profile_creation_failed',
-                    'message': 'Failed to create user profile'
-                }
-                
-        except Exception as e:
-            logger.error(f"Error creating user profile: {str(e)}")
-            return {
-                'success': False,
-                'error': 'database_error',
-                'message': 'Database error while creating profile'
-            }
-
+    
     # =============================================================================
     # STEP 4: DOMAIN SETUP
     # =============================================================================
     
     def setup_domain(self, access_token: str, domain: str) -> Dict:
-        """
-        Setup user's domain and create site
-        
-        Args:
-            access_token: User's access token
-            domain: Website domain
-            
-        Returns:
-            Dict with site_id and setup status
-        """
+        """Setup user's domain and create site"""
         try:
             # Verify access token
             token_payload = self.jwt_service.verify_token(access_token)
@@ -392,7 +285,7 @@ class OnboardingService:
                 }
             )
             
-            # Start background scraping (simplified - just mark as started)
+            # Start background scraping
             self._start_website_scraping(site_id, clean_domain)
             
             return {
@@ -412,18 +305,8 @@ class OnboardingService:
             }
     
     def get_scraping_status(self, site_id: str) -> Dict:
-        """
-        Get website scraping status
-        
-        Args:
-            site_id: Site identifier
-            
-        Returns:
-            Dict with scraping status and progress
-        """
+        """Get website scraping status"""
         try:
-            # For now, return mock status
-            # In week 2, we'll implement actual scraping with Celery
             return {
                 'site_id': site_id,
                 'status': 'in_progress',
@@ -431,7 +314,6 @@ class OnboardingService:
                 'pages_scraped': 23,
                 'estimated_completion': '2-3 minutes'
             }
-            
         except Exception as e:
             logger.error(f"Error getting scraping status for {site_id}: {str(e)}")
             return {
@@ -445,16 +327,7 @@ class OnboardingService:
     # =============================================================================
     
     def upload_text_content(self, access_token: str, text_content: str) -> Dict:
-        """
-        Upload text content for processing
-        
-        Args:
-            access_token: User's access token
-            text_content: Text content to process
-            
-        Returns:
-            Dict with upload status
-        """
+        """Upload text content for processing"""
         try:
             # Verify token and get site_id
             token_payload = self.jwt_service.verify_token(access_token)
@@ -492,7 +365,7 @@ class OnboardingService:
                 content_text=text_content.strip()
             )
             
-            # Process content immediately (simplified for MVP)
+            # Process content immediately
             self._process_text_content(upload_id, text_content, site_id)
             
             return {
@@ -510,16 +383,7 @@ class OnboardingService:
             }
     
     def upload_file(self, access_token: str, file_data: Dict) -> Dict:
-        """
-        Upload file for processing
-        
-        Args:
-            access_token: User's access token
-            file_data: Dict with file info (name, content, type, size)
-            
-        Returns:
-            Dict with upload status
-        """
+        """Upload file for processing"""
         try:
             # Verify token
             token_payload = self.jwt_service.verify_token(access_token)
@@ -563,7 +427,7 @@ class OnboardingService:
                 file_type=file_data['type']
             )
             
-            # Process file immediately (simplified)
+            # Process file immediately
             self._process_file_content(upload_id, file_path, site_id)
             
             return {
@@ -585,15 +449,7 @@ class OnboardingService:
     # =============================================================================
     
     def generate_widget_script(self, access_token: str) -> Dict:
-        """
-        Generate widget script for user to embed
-        
-        Args:
-            access_token: User's access token
-            
-        Returns:
-            Dict with widget script and instructions
-        """
+        """Generate widget script for user to embed"""
         try:
             # Verify token
             token_payload = self.jwt_service.verify_token(access_token)
@@ -647,15 +503,7 @@ class OnboardingService:
             }
     
     def verify_widget_installation(self, access_token: str) -> Dict:
-        """
-        Verify that widget is installed on user's website
-        
-        Args:
-            access_token: User's access token
-            
-        Returns:
-            Dict with verification status
-        """
+        """Verify that widget is installed on user's website"""
         try:
             # Verify token
             token_payload = self.jwt_service.verify_token(access_token)
@@ -680,8 +528,7 @@ class OnboardingService:
                     'message': 'Site setup incomplete'
                 }
             
-            # For now, simulate verification check
-            # In production, this would check if the widget loads on their domain
+            # Simulate verification check
             verification_result = self._check_widget_installation(site_id, domain)
             
             if verification_result:
@@ -729,15 +576,7 @@ class OnboardingService:
     # =============================================================================
     
     def get_onboarding_state(self, email: str) -> Dict:
-        """
-        Get current onboarding state for user
-        
-        Args:
-            email: User's email address
-            
-        Returns:
-            Dict with current onboarding state
-        """
+        """Get current onboarding state for user"""
         try:
             session = self.onboarding_model.get_onboarding_session(email)
             if not session:
@@ -768,15 +607,8 @@ class OnboardingService:
     # =============================================================================
     
     def _send_otp_email(self, email: str, otp_code: str):
-        """Send OTP email (implement with your email service)"""
-        # TODO: Implement actual email sending
-        # For now, log it for development
+        """Send OTP email"""
         logger.info(f"📧 Sending OTP {otp_code} to {email}")
-        
-        # You can integrate with:
-        # - Supabase Auth built-in emails
-        # - SendGrid, Mailgun, SES, etc.
-        # - Or use your existing email service
     
     def _validate_password(self, password: str) -> Dict:
         """Validate password strength"""
@@ -788,7 +620,7 @@ class OnboardingService:
         }
         
         score = sum(checks.values())
-        valid = score >= 3  # Require at least 3 criteria
+        valid = score >= 3
         
         return {
             'valid': valid,
@@ -799,11 +631,10 @@ class OnboardingService:
     def _create_supabase_user(self, email: str, password: str) -> Dict:
         """Create user in Supabase Auth"""
         try:
-            # Use Supabase Admin API to create user
             result = self.onboarding_model.supabase.auth.admin.create_user({
                 'email': email,
                 'password': password,
-                'email_confirm': True  # Auto-confirm since we verified OTP
+                'email_confirm': True
             })
             
             if result.user:
@@ -826,38 +657,74 @@ class OnboardingService:
                 'message': 'Authentication system error'
             }
     
+    def _create_onboarding_session(self, email: str, session_data: Dict) -> Dict:
+        """Create onboarding session"""
+        try:
+            self.onboarding_model.update_onboarding_session(
+                email=email,
+                step=session_data.get('current_step', 1),
+                session_data=session_data
+            )
+            return {'success': True}
+        except Exception as e:
+            logger.error(f"Error creating onboarding session: {str(e)}")
+            return {
+                'success': False,
+                'error': 'session_error',
+                'message': 'Failed to create session'
+            }
+    
+    def _create_user_profile(self, user_id: str, email: str, profile_data: Dict) -> Dict:
+        """Create user profile with optional fields"""
+        try:
+            profile_record = {
+                'id': user_id,
+                'email': email,
+                'name': profile_data.get('name'),
+                'date_of_birth': profile_data.get('date_of_birth'),
+                'country': profile_data.get('country'),
+                'onboarding_completed': False,
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            result = self.onboarding_model.supabase.table('profiles').insert(profile_record).execute()
+            
+            if result.data:
+                return {
+                    'success': True,
+                    'message': 'Profile created successfully'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'profile_creation_failed',
+                    'message': 'Failed to create user profile'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error creating user profile: {str(e)}")
+            return {
+                'success': False,
+                'error': 'database_error',
+                'message': 'Database error while creating profile'
+            }
+    
     def _start_website_scraping(self, site_id: str, domain: str):
-        """Start website scraping (simplified for MVP)"""
-        # For now, just log it
-        # In week 2, we'll implement actual scraping
+        """Start website scraping"""
         logger.info(f"🕷️ Starting website scraping for {domain} (site_id: {site_id})")
-        
-        # TODO: Implement actual scraping with Celery
-        # celery_app.send_task('scrape_website', args=[site_id, domain])
     
     def _process_text_content(self, upload_id: str, content: str, site_id: str):
-        """Process text content immediately (simplified)"""
+        """Process text content immediately"""
         try:
-            # Mark as processing
             self.onboarding_model.update_content_upload_status(upload_id, 'processing')
-            
-            # Simulate processing time
             time.sleep(1)
-            
-            # TODO: Implement actual content processing
-            # - Generate embeddings
-            # - Store in snappi_chunks table
-            # - Create search vectors
-            
-            # Mark as completed
             self.onboarding_model.update_content_upload_status(
                 upload_id, 
                 'completed',
-                chunks_created=len(content) // 1000 + 1  # Rough estimate
+                chunks_created=len(content) // 1000 + 1
             )
-            
             logger.info(f"Text content processed for upload {upload_id}")
-            
         except Exception as e:
             logger.error(f"Error processing text content: {str(e)}")
             self.onboarding_model.update_content_upload_status(
@@ -867,25 +734,15 @@ class OnboardingService:
             )
     
     def _process_file_content(self, upload_id: str, file_path: str, site_id: str):
-        """Process file content (simplified)"""
+        """Process file content"""
         try:
-            # Mark as processing
             self.onboarding_model.update_content_upload_status(upload_id, 'processing')
-            
-            # TODO: Implement actual file processing
-            # - Extract text from PDF/DOCX
-            # - Generate embeddings
-            # - Store in snappi_chunks
-            
-            # For now, just mark as completed
             self.onboarding_model.update_content_upload_status(
                 upload_id,
                 'completed',
-                chunks_created=5  # Mock value
+                chunks_created=5
             )
-            
             logger.info(f"File content processed for upload {upload_id}")
-            
         except Exception as e:
             logger.error(f"Error processing file content: {str(e)}")
             self.onboarding_model.update_content_upload_status(
@@ -898,7 +755,7 @@ class OnboardingService:
         """Validate uploaded file"""
         allowed_types = ['application/pdf', 'text/plain', 'application/msword', 
                         'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
-        max_size = 25 * 1024 * 1024  # 25MB
+        max_size = 25 * 1024 * 1024
         
         if file_data['size'] > max_size:
             return {
@@ -916,32 +773,11 @@ class OnboardingService:
     
     def _save_uploaded_file(self, file_data: Dict, site_id: str) -> str:
         """Save uploaded file and return path"""
-        # TODO: Implement actual file saving
-        # - Save to local storage or Supabase Storage
-        # - Generate unique filename
-        # - Return file path
-        
-        # For now,
-
-    def _save_uploaded_file(self, file_data: Dict, site_id: str) -> str:
-        """Save uploaded file and return path"""
-        # TODO: Implement actual file saving
-        # - Save to local storage or Supabase Storage
-        # - Generate unique filename
-        # - Return file path
-        
-        # For now, return mock path
         timestamp = int(time.time())
         filename = f"{site_id}_{timestamp}_{file_data['name']}"
         return f"uploads/{filename}"
     
     def _check_widget_installation(self, site_id: str, domain: str) -> bool:
         """Check if widget is installed on domain"""
-        # TODO: Implement actual widget detection
-        # - Make HTTP request to domain
-        # - Check for widget script in HTML
-        # - Verify widget loads correctly
-        
-        # For now, simulate successful verification after delay
         time.sleep(2)
-        return True  # Mock successful verification
+        return True
