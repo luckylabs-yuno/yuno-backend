@@ -9,11 +9,32 @@ from datetime import datetime
 from services.onboarding_service import OnboardingService
 from utils.helpers import ValidationHelpers, ResponseHelpers
 
-onboarding_bp = Blueprint('onboarding', __name__)
-logger = logging.getLogger(__name__)
+# ADD THESE ENDPOINTS TO YOUR EXISTING routes/onboarding.py file
+
+# At the top, add these imports:
+from services.content_processor import ContentProcessor
+from werkzeug.utils import secure_filename
+import os
+import uuid
+
 
 # Initialize service
 onboarding_service = OnboardingService()
+
+# Add this constant after imports:
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+onboarding_bp = Blueprint('onboarding', __name__)
+logger = logging.getLogger(__name__)
+
+content_processor = ContentProcessor(
+    supabase_client=onboarding_service.onboarding_model.supabase,
+    openai_api_key=os.environ.get('OPENAI_API_KEY')
+)
 
 # =============================================================================
 # STEP 1: EMAIL & OTP ENDPOINTS
@@ -913,3 +934,196 @@ def resend_raw_test():
             'traceback': traceback.format_exc(),
             'timestamp': datetime.utcnow().isoformat()
         }), 500
+
+@onboarding_bp.route('/update-contact-info', methods=['POST'])
+def update_contact_info():
+    """Update contact information for site"""
+    try:
+        data = request.get_json()
+        site_id = data.get('site_id')
+        contact_info = data.get('contact_info', {})
+        
+        if not site_id:
+            return jsonify({'error': 'Site ID required'}), 400
+            
+        if not contact_info.get('supportEmail'):
+            return jsonify({'error': 'Support email is required'}), 400
+        
+        # Process contact info
+        success = content_processor.process_contact_info(site_id, contact_info)
+        
+        if success:
+            # Update session
+            email = data.get('email')  # You might get this from JWT token instead
+            if email:
+                onboarding_service.onboarding_model.update_onboarding_session(
+                    email=email,
+                    step=5,
+                    session_data={'contact_info_added': True}
+                )
+            
+            return jsonify({
+                'success': True,
+                'message': 'Contact information updated'
+            })
+        else:
+            return jsonify({'error': 'Failed to update contact info'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error updating contact info: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@onboarding_bp.route('/upload-text', methods=['POST'])
+def upload_text_content():
+    """Process text content upload"""
+    try:
+        data = request.get_json()
+        site_id = data.get('site_id')
+        content = data.get('content')
+        
+        if not site_id or not content:
+            return jsonify({'error': 'Site ID and content required'}), 400
+        
+        # Create upload record
+        upload_id = str(uuid.uuid4())
+        onboarding_service.onboarding_model.supabase.table('content_uploads').insert({
+            'id': upload_id,
+            'site_id': site_id,
+            'content_type': 'text',
+            'content_text': content[:5000],  # Store first 5000 chars
+            'processing_status': 'processing'
+        }).execute()
+        
+        # Process content
+        result = content_processor.process_text_content(site_id, content, upload_id)
+        
+        # Update upload status
+        status = 'completed' if result['success'] else 'failed'
+        onboarding_service.onboarding_model.supabase.table('content_uploads')\
+            .update({
+                'processing_status': status,
+                'metadata': result
+            })\
+            .eq('id', upload_id)\
+            .execute()
+        
+        return jsonify({
+            'success': result['success'],
+            'upload_id': upload_id,
+            'message': 'Text content processed',
+            'chunks_processed': result.get('chunks_processed', 0)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error uploading text: {str(e)}")
+        return jsonify({'error': 'Failed to process text'}), 500
+
+@onboarding_bp.route('/upload-file', methods=['POST'])
+def upload_file_content():
+    """Process file upload"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+            
+        file = request.files['file']
+        site_id = request.form.get('site_id')
+        
+        if not site_id:
+            return jsonify({'error': 'Site ID required'}), 400
+            
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+            
+        if not allowed_file(file.filename):
+            return jsonify({'error': f'Invalid file type. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
+        
+        # Check file size (25MB limit)
+        file.seek(0, os.SEEK_END)
+        file_size = file.tell()
+        file.seek(0)
+        
+        if file_size > 25 * 1024 * 1024:
+            return jsonify({'error': 'File too large. Maximum 25MB'}), 400
+        
+        # Save to Supabase Storage
+        upload_id = str(uuid.uuid4())
+        file_ext = file.filename.rsplit('.', 1)[1].lower()
+        storage_path = f"uploads/{site_id}/{upload_id}.{file_ext}"
+        
+        # Upload to storage
+        file_data = file.read()
+        storage_response = onboarding_service.onboarding_model.supabase\
+            .storage.from_('content-uploads')\
+            .upload(storage_path, file_data)
+        
+        # Create upload record
+        onboarding_service.onboarding_model.supabase.table('content_uploads').insert({
+            'id': upload_id,
+            'site_id': site_id,
+            'content_type': 'file',
+            'file_path': storage_path,
+            'processing_status': 'processing',
+            'metadata': {
+                'filename': secure_filename(file.filename),
+                'size': file_size
+            }
+        }).execute()
+        
+        # Process file
+        result = content_processor.process_file_upload(
+            site_id, 
+            storage_path, 
+            file.filename, 
+            upload_id
+        )
+        
+        # Update status
+        status = 'completed' if result['success'] else 'failed'
+        onboarding_service.onboarding_model.supabase.table('content_uploads')\
+            .update({
+                'processing_status': status,
+                'metadata': {
+                    'filename': file.filename,
+                    'size': file_size,
+                    'result': result
+                }
+            })\
+            .eq('id', upload_id)\
+            .execute()
+        
+        return jsonify({
+            'success': result['success'],
+            'upload_id': upload_id,
+            'message': 'File processed successfully' if result['success'] else 'File processing failed'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error uploading file: {str(e)}")
+        return jsonify({'error': 'Failed to process file'}), 500
+
+@onboarding_bp.route('/upload-status/<upload_id>', methods=['GET'])
+def get_upload_status(upload_id):
+    """Get upload processing status"""
+    try:
+        result = onboarding_service.onboarding_model.supabase\
+            .table('content_uploads')\
+            .select('*')\
+            .eq('id', upload_id)\
+            .single()\
+            .execute()
+        
+        if not result.data:
+            return jsonify({'error': 'Upload not found'}), 404
+        
+        upload = result.data
+        return jsonify({
+            'upload_id': upload['id'],
+            'status': upload['processing_status'],
+            'content_type': upload['content_type'],
+            'created_at': upload['created_at'],
+            'metadata': upload.get('metadata', {})
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting upload status: {str(e)}")
+        return jsonify({'error': 'Failed to get status'}), 500

@@ -9,6 +9,7 @@ import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 import redis
 from datetime import datetime
+from werkzeug.utils import secure_filename
 
 # Load environment variables
 load_dotenv()
