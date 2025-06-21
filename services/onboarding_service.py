@@ -222,9 +222,13 @@ class OnboardingService:
             if not session_result['success']:
                 return session_result
             
-            # Generate access token
-            access_token = self.jwt_service.generate_access_token(user_id, email)
             
+            # Generate access token using JWT service
+            access_token = self.jwt_service.generate_token({
+                'user_id': user_id,
+                'email': email,
+                'authenticated': True
+            }, expiry_seconds=86400)  # 24 hours
             return {
                 'success': True,
                 'message': 'Account created successfully',
