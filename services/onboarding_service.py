@@ -229,6 +229,17 @@ class OnboardingService:
                 'email': email,
                 'authenticated': True
             }, expiry_seconds=86400)  # 24 hours
+            email = token_payload.get('email')  # You should have this from token verification
+            self.onboarding_model.update_onboarding_session(
+                email=email,
+                step=4,  # Move to domain setup
+                session_data={
+                    'profile_completed': True,
+                    'user_id': user_id,  # The created user ID
+                    'name': profile_data.get('name', '')
+                }
+            )
+
             return {
                 'success': True,
                 'message': 'Account created successfully',
@@ -520,7 +531,7 @@ class OnboardingService:
                 'message': 'Failed to generate widget script'
             }
     
-    def verify_widget_installation(self, access_token: str) -> Dict:
+    def verify_widget_installation(self, access_token: str, page_url: str = None) -> Dict:
         """Verify that widget is installed on user's website"""
         try:
             # Verify token
@@ -560,13 +571,26 @@ class OnboardingService:
                     }
                 )
                 
+                if verification_result:
+                    # Update onboarding session to completed
+                    email = token_payload.get('email')
+                    self.onboarding_model.update_onboarding_session(
+                        email=email,
+                        step=7,  # Completed
+                        session_data={
+                            'widget_verified': True,
+                            'completed_at': datetime.utcnow().isoformat()
+                        }
+                    )
+
                 self.onboarding_model.complete_onboarding(email)
                 
                 return {
                     'success': True,
                     'verified': True,
                     'message': 'Widget installation verified successfully!',
-                    'next_step': 'dashboard'
+                    'next_step': 'dashboard',
+                    'redirect_url': 'https://dashboard.helloyuno.com'
                 }
             else:
                 return {
@@ -824,7 +848,52 @@ class OnboardingService:
         filename = f"{site_id}_{timestamp}_{file_data['name']}"
         return f"uploads/{filename}"
     
+
     def _check_widget_installation(self, site_id: str, domain: str) -> bool:
         """Check if widget is installed on domain"""
-        time.sleep(2)
-        return True
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+            
+            # Try both with and without www
+            urls_to_check = [
+                f"https://{domain}",
+                f"https://www.{domain}",
+                f"http://{domain}",
+                f"http://www.{domain}"
+            ]
+            
+            for url in urls_to_check:
+                try:
+                    # Make request with timeout
+                    response = requests.get(url, timeout=10, verify=False)
+                    if response.status_code == 200:
+                        # Parse HTML
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        
+                        # Look for our widget script
+                        scripts = soup.find_all('script')
+                        for script in scripts:
+                            # Check script src
+                            if script.get('src') and 'yuno.js' in script.get('src'):
+                                # Check if site_id matches
+                                if script.get('site_id') == site_id:
+                                    logger.info(f"✅ Widget found on {url} with correct site_id")
+                                    return True
+                            
+                            # Check inline scripts
+                            if script.string and site_id in script.string and 'yuno' in script.string.lower():
+                                logger.info(f"✅ Widget found in inline script on {url}")
+                                return True
+                                
+                except requests.RequestException as e:
+                    logger.warning(f"Failed to check {url}: {str(e)}")
+                    continue
+            
+            logger.warning(f"❌ Widget not found on any URL for domain {domain}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking widget installation: {str(e)}")
+            # Return True on error to not block users
+            return True

@@ -1,6 +1,7 @@
 """
 Onboarding API routes - extends your existing Flask app
 """
+from sqlalchemy import desc  # Add this import at the top
 from flask import Blueprint, request, jsonify
 import logging
 from datetime import datetime
@@ -120,6 +121,12 @@ def verify_otp():
         result = onboarding_service.verify_otp(email, otp_code)
         
         if result['success']:
+            # ADD THIS: Update session to step 3
+            onboarding_service.onboarding_model.update_onboarding_session(
+                email=email,
+                step=3,
+                session_data={'otp_verified': True}
+            )
             return jsonify(ResponseHelpers.success_response(
                 data={
                     'temp_token': result['temp_token']
@@ -249,6 +256,16 @@ def setup_domain():
         result = onboarding_service.setup_domain(access_token, domain)
         
         if result['success']:
+            # ADD THIS: Update session to step 5
+            # First get email from token
+            jwt_service = JWTService()
+            token_payload = jwt_service.verify_token(access_token)
+            if token_payload and token_payload.get('email'):
+                onboarding_service.onboarding_model.update_onboarding_session(
+                    email=token_payload['email'],
+                    step=5,
+                    session_data={'site_id': result['site_id'], 'domain': result['domain']}
+                )
             return jsonify(ResponseHelpers.success_response(
                 data={
                     'site_id': result['site_id'],
@@ -347,11 +364,16 @@ def generate_widget_script():
         )), 500
 
 
+# Also update the verify_widget endpoint in routes/onboarding.py to accept page_url
+
 @onboarding_bp.route('/verify-widget', methods=['POST', 'OPTIONS'])
 def verify_widget():
     """
     Verify widget installation on user's website
     POST /onboarding/verify-widget
+    Body: {
+        "page_url": "https://example.com/specific-page" (optional)
+    }
     """
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
@@ -366,14 +388,19 @@ def verify_widget():
         
         access_token = auth_header.replace('Bearer ', '')
         
+        # Get optional page URL
+        data = request.get_json() or {}
+        page_url = data.get('page_url')
+        
         # Verify widget installation
-        result = onboarding_service.verify_widget_installation(access_token)
+        result = onboarding_service.verify_widget_installation(access_token, page_url)
         
         if result['success']:
             return jsonify(ResponseHelpers.success_response(
                 data={
                     'verified': result['verified'],
-                    'next_step': result.get('next_step')
+                    'next_step': result.get('next_step'),
+                    'redirect_url': result.get('redirect_url')
                 },
                 message=result['message']
             )), 200
@@ -392,6 +419,7 @@ def verify_widget():
         return jsonify(ResponseHelpers.error_response(
             "An error occurred while verifying widget"
         )), 500
+
 
 
 # =============================================================================
@@ -997,6 +1025,23 @@ def update_contact_info():
         success = content_processor.process_contact_info(site_id, contact_info)
         
         if success:
+            # GET EMAIL FROM TOKEN (add this part)
+            auth_header = request.headers.get('Authorization', '')
+            if auth_header.startswith('Bearer '):
+                access_token = auth_header.replace('Bearer ', '')
+                jwt_service = JWTService()
+                token_payload = jwt_service.verify_token(access_token)
+                
+                if token_payload and token_payload.get('email'):
+                    # Update session - user can now proceed to widget
+                    onboarding_service.onboarding_model.update_onboarding_session(
+                        email=token_payload['email'],
+                        step=6,  # Move to widget setup
+                        session_data={
+                            'contact_info_added': True,
+                            'content_ready': True
+                        }
+                    )    
             return jsonify({
                 'success': True,
                 'message': 'Contact information updated'
@@ -1034,3 +1079,349 @@ def get_upload_status(upload_id):
     except Exception as e:
         logger.error(f"Error getting upload status: {str(e)}")
         return jsonify({'error': 'Failed to get status'}), 500
+
+# Add/update these endpoints in routes/onboarding.py for proper state management
+
+@onboarding_bp.route('/get-user-state', methods=['GET'])
+def get_user_state():
+    """
+    Get user's current onboarding state with proper authentication
+    GET /onboarding/get-user-state
+    """
+    try:
+        # Get JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization required'}), 401
+            
+        access_token = auth_header.replace('Bearer ', '')
+        
+        # Verify token and get email
+        from services.jwt_service import JWTService
+        jwt_service = JWTService()
+        token_payload = jwt_service.verify_token(access_token)
+        
+        if not token_payload:
+            return jsonify({'error': 'Invalid token'}), 401
+            
+        email = token_payload.get('email')
+        if not email:
+            # Try to get email from user_id if available
+            user_id = token_payload.get('sub') or token_payload.get('user_id')
+            if user_id:
+                # Get email from profiles
+                user_data = onboarding_service.onboarding_model.supabase\
+                    .table('profiles')\
+                    .select('email')\
+                    .eq('id', user_id)\
+                    .single()\
+                    .execute()
+                    
+                if user_data.data:
+                    email = user_data.data.get('email')
+                    
+        if not email:
+            return jsonify({'error': 'User email not found'}), 400
+            
+        # Get onboarding session
+        session = onboarding_service.onboarding_model.get_onboarding_session(email)
+        
+        # Get user profile
+        profile_data = onboarding_service.onboarding_model.supabase\
+            .table('profiles')\
+            .select('*')\
+            .eq('email', email)\
+            .single()\
+            .execute()
+            
+        profile = profile_data.data if profile_data.data else None
+        
+        # Determine current step based on data
+        current_step = 1  # Default to step 1
+        session_data = {}
+        
+        if session:
+            current_step = session.get('current_step', 1)
+            session_data = session.get('session_data', {})
+            
+        # Override step based on actual progress
+        if profile:
+            if profile.get('site_id'):
+                # Has site_id, at least step 4 completed
+                current_step = max(current_step, 5)
+                session_data['site_id'] = profile['site_id']
+                session_data['domain'] = profile.get('domain')
+                
+                # Check if widget is verified
+                site_data = onboarding_service.onboarding_model.supabase\
+                    .table('sites')\
+                    .select('widget_verified')\
+                    .eq('site_id', profile['site_id'])\
+                    .single()\
+                    .execute()
+                    
+                if site_data.data and site_data.data.get('widget_verified'):
+                    current_step = 7  # Completed
+            elif profile.get('name'):
+                # Has profile data, at least step 3 completed
+                current_step = max(current_step, 4)
+                
+        # Check if email is verified
+        elif email:
+            # Check OTP verification
+            otp_data = onboarding_service.onboarding_model.supabase\
+                .table('otp_verifications')\
+                .select('is_verified')\
+                .eq('email', email)\
+                .eq('is_verified', True)\
+                .order('created_at', desc=True)\
+                .limit(1)\
+                .execute()
+                
+            if otp_data.data:
+                current_step = max(current_step, 3)  # OTP verified, go to profile
+                
+        return jsonify({
+            'success': True,
+            'current_step': current_step,
+            'email': email,
+            'session_data': session_data,
+            'profile': {
+                'name': profile.get('name') if profile else None,
+                'site_id': profile.get('site_id') if profile else None,
+                'domain': profile.get('domain') if profile else None
+            },
+            'completed': current_step >= 7
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting user state: {str(e)}")
+        return jsonify({'error': 'Failed to get user state'}), 500
+
+@onboarding_bp.route('/update-step', methods=['POST'])
+def update_onboarding_step():
+    """
+    Update user's current onboarding step
+    POST /onboarding/update-step
+    """
+    try:
+        # Get JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization required'}), 401
+            
+        access_token = auth_header.replace('Bearer ', '')
+        
+        # Verify token
+        from services.jwt_service import JWTService
+        jwt_service = JWTService()
+        token_payload = jwt_service.verify_token(access_token)
+        
+        if not token_payload:
+            return jsonify({'error': 'Invalid token'}), 401
+            
+        email = token_payload.get('email')
+        if not email:
+            return jsonify({'error': 'Email not found'}), 400
+            
+        data = request.get_json()
+        new_step = data.get('step')
+        session_data = data.get('session_data', {})
+        
+        if not new_step:
+            return jsonify({'error': 'Step number required'}), 400
+            
+        # Update or create session
+        success = onboarding_service.onboarding_model.update_onboarding_session(
+            email=email,
+            step=new_step,
+            session_data=session_data
+        )
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'Updated to step {new_step}'
+            })
+        else:
+            return jsonify({'error': 'Failed to update step'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error updating step: {str(e)}")
+        return jsonify({'error': 'Failed to update step'}), 500
+
+@onboarding_bp.route('/resume', methods=['GET'])
+def resume_onboarding():
+    """
+    Get the appropriate route to resume onboarding
+    GET /onboarding/resume
+    """
+    try:
+        # Get JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            # No token, start from beginning
+            return jsonify({
+                'success': True,
+                'redirect_to': '/onboarding',
+                'step': 1,
+                'message': 'Start onboarding'
+            })
+            
+        access_token = auth_header.replace('Bearer ', '')
+        
+        # Get user state
+        from services.jwt_service import JWTService
+        jwt_service = JWTService()
+        token_payload = jwt_service.verify_token(access_token)
+        
+        if not token_payload:
+            return jsonify({
+                'success': True,
+                'redirect_to': '/onboarding',
+                'step': 1,
+                'message': 'Invalid token, please start over'
+            })
+            
+        email = token_payload.get('email')
+        if not email:
+            return jsonify({
+                'success': True,
+                'redirect_to': '/onboarding',
+                'step': 1,
+                'message': 'Please start onboarding'
+            })
+            
+        # Get current state
+        state_response = get_user_state()
+        state_data = state_response[0].get_json()
+        
+        if not state_data.get('success'):
+            return jsonify({
+                'success': True,
+                'redirect_to': '/onboarding',
+                'step': 1,
+                'message': 'Please start onboarding'
+            })
+            
+        current_step = state_data.get('current_step', 1)
+        
+        # Map steps to routes
+        step_routes = {
+            1: '/onboarding',
+            2: '/onboarding/verify-otp',
+            3: '/onboarding/profile-setup',
+            4: '/onboarding/domain-setup',
+            5: '/onboarding/content-upload',
+            6: '/onboarding/widget-script',
+            7: '/onboarding/complete'
+        }
+        
+        redirect_to = step_routes.get(current_step, '/onboarding')
+        
+        return jsonify({
+            'success': True,
+            'redirect_to': redirect_to,
+            'step': current_step,
+            'email': email,
+            'session_data': state_data.get('session_data', {}),
+            'message': f'Resume from step {current_step}'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error resuming onboarding: {str(e)}")
+        return jsonify({
+            'success': True,
+            'redirect_to': '/onboarding',
+            'step': 1,
+            'message': 'Error occurred, please start over'
+        })
+
+# For Content Ingestion - Update your routes/onboarding.py
+
+
+
+# 2. Create a "skip content" endpoint for users who want to skip optional content
+@onboarding_bp.route('/skip-content', methods=['POST'])
+def skip_content_upload():
+    """Skip optional content upload and proceed to widget setup"""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization required'}), 401
+            
+        access_token = auth_header.replace('Bearer ', '')
+        jwt_service = JWTService()
+        token_payload = jwt_service.verify_token(access_token)
+        
+        if not token_payload:
+            return jsonify({'error': 'Invalid token'}), 401
+            
+        email = token_payload.get('email')
+        if not email:
+            return jsonify({'error': 'Email not found'}), 400
+            
+        # Update session to widget step
+        onboarding_service.onboarding_model.update_onboarding_session(
+            email=email,
+            step=6,  # Move to widget setup
+            session_data={
+                'content_skipped': True
+            }
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Proceeding to widget setup'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error skipping content: {str(e)}")
+        return jsonify({'error': 'Failed to skip content'}), 500
+
+# 3. Create a combined "content complete" endpoint
+@onboarding_bp.route('/content-complete', methods=['POST'])
+def mark_content_complete():
+    """Mark content ingestion as complete and move to widget setup"""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization required'}), 401
+            
+        access_token = auth_header.replace('Bearer ', '')
+        jwt_service = JWTService()
+        token_payload = jwt_service.verify_token(access_token)
+        
+        if not token_payload:
+            return jsonify({'error': 'Invalid token'}), 401
+            
+        email = token_payload.get('email')
+        data = request.get_json()
+        
+        # Check what content was added
+        content_summary = {
+            'contact_info_added': data.get('contact_info_added', False),
+            'text_uploaded': data.get('text_uploaded', False),
+            'files_uploaded': data.get('files_uploaded', False),
+            'upload_ids': data.get('upload_ids', [])
+        }
+        
+        # Update session to widget step
+        onboarding_service.onboarding_model.update_onboarding_session(
+            email=email,
+            step=6,  # Move to widget setup
+            session_data={
+                'content_complete': True,
+                'content_summary': content_summary
+            }
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Content ingestion complete, proceeding to widget setup',
+            'next_step': 6
+        })
+        
+    except Exception as e:
+        logger.error(f"Error marking content complete: {str(e)}")
+        return jsonify({'error': 'Failed to complete content step'}), 500
