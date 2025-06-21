@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -92,11 +92,25 @@ app.register_blueprint(onboarding_bp, url_prefix='/onboarding')  # NEW REGISTRAT
 app.register_blueprint(auth_bp, url_prefix='/widget')            # Widget authentication
 app.register_blueprint(chat_bp, url_prefix='/')                  # Chat endpoints
 
-# Preflight handler
+# Preflight handler - FIXED VERSION
 @app.before_request
 def handle_preflight():
     if request.method == "OPTIONS":
-        response = jsonify({'status': 'ok'})
+        # Create proper preflight response with explicit CORS headers
+        response = make_response()
+        
+        # Set CORS headers explicitly
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers['Access-Control-Allow-Origin'] = origin
+        else:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With, Accept, Origin'
+        response.headers['Access-Control-Max-Age'] = '86400'
+        response.headers['Content-Type'] = 'application/json'
+        
         return response, 200
 
 # Health check endpoint
