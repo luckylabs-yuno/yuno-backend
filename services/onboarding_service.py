@@ -66,7 +66,21 @@ class OnboardingService:
                 logger.info(f"🔑 OTP for {email}: {otp_code}")
             
             # TODO: Send actual email using your preferred service
-            # For now, we'll use Supabase Auth's built-in OTP
+            # For now, return mock path
+        timestamp = int(time.time())
+        filename = f"{site_id}_{timestamp}_{file_data['name']}"
+        return f"uploads/{filename}"
+    
+    def _check_widget_installation(self, site_id: str, domain: str) -> bool:
+        """Check if widget is installed on domain"""
+        # TODO: Implement actual widget detection
+        # - Make HTTP request to domain
+        # - Check for widget script in HTML
+        # - Verify widget loads correctly
+        
+        # For now, simulate successful verification after delay
+        time.sleep(2)
+        return True  # Mock successful verification we'll use Supabase Auth's built-in OTP
             self._send_otp_email(email, otp_code)
             
             # Create or update onboarding session
@@ -156,17 +170,17 @@ class OnboardingService:
     # =============================================================================
     
     def complete_profile_setup(self, temp_token: str, profile_data: Dict) -> Dict:
-    """
-    Complete profile setup - NOW ONLY REQUIRES PASSWORD
-    Optional fields: name, date_of_birth, country (stored for future use)
-    
-    Args:
-        temp_token: Temporary token from OTP verification
-        profile_data: Dict with password (required) and optional profile fields
+        """
+        Complete profile setup - NOW ONLY REQUIRES PASSWORD
+        Optional fields: name, date_of_birth, country (stored for future use)
         
-    Returns:
-        Dict with success status and user info
-    """
+        Args:
+            temp_token: Temporary token from OTP verification
+            profile_data: Dict with password (required) and optional profile fields
+            
+        Returns:
+            Dict with success status and user info
+        """
         try:
             # Verify temp token
             token_payload = self.jwt_service.verify_token(temp_token)
@@ -221,7 +235,7 @@ class OnboardingService:
             if not profile_result['success']:
                 # Cleanup: delete the auth user if profile creation fails
                 try:
-                    self.supabase_admin.auth.admin.delete_user(user_id)
+                    self.onboarding_model.supabase.auth.admin.delete_user(user_id)
                 except:
                     pass
                 return profile_result
@@ -254,7 +268,62 @@ class OnboardingService:
                 'message': 'An error occurred while creating your account'
             }
 
-    
+    def _create_onboarding_session(self, email: str, session_data: Dict) -> Dict:
+        """Create onboarding session"""
+        try:
+            self.onboarding_model.update_onboarding_session(
+                email=email,
+                step=session_data.get('current_step', 1),
+                session_data=session_data
+            )
+            return {'success': True}
+        except Exception as e:
+            logger.error(f"Error creating onboarding session: {str(e)}")
+            return {
+                'success': False,
+                'error': 'session_error',
+                'message': 'Failed to create session'
+            }
+
+    def _create_user_profile(self, user_id: str, email: str, profile_data: Dict) -> Dict:
+        """
+        Create user profile with optional fields
+        """
+        try:
+            profile_record = {
+                'id': user_id,
+                'email': email,
+                'name': profile_data.get('name'),  # Can be None
+                'date_of_birth': profile_data.get('date_of_birth'),  # Can be None
+                'country': profile_data.get('country'),  # Can be None
+                'onboarding_completed': False,  # Will be true after full flow
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            # Insert profile
+            result = self.onboarding_model.supabase.table('profiles').insert(profile_record).execute()
+            
+            if result.data:
+                return {
+                    'success': True,
+                    'message': 'Profile created successfully'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'profile_creation_failed',
+                    'message': 'Failed to create user profile'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error creating user profile: {str(e)}")
+            return {
+                'success': False,
+                'error': 'database_error',
+                'message': 'Database error while creating profile'
+            }
+
     # =============================================================================
     # STEP 4: DOMAIN SETUP
     # =============================================================================
@@ -756,49 +825,6 @@ class OnboardingService:
                 'error': 'auth_error',
                 'message': 'Authentication system error'
             }
-    # ============================================================================
-# UPDATED _create_user_profile method to handle optional fields
-# ============================================================================
-
-def _create_user_profile(self, user_id: str, email: str, profile_data: Dict) -> Dict:
-        """
-        Create user profile with optional fields
-        """
-        try:
-            profile_record = {
-                'id': user_id,
-                'email': email,
-                'name': profile_data.get('name'),  # Can be None
-                'date_of_birth': profile_data.get('date_of_birth'),  # Can be None
-                'country': profile_data.get('country'),  # Can be None
-                'onboarding_completed': False,  # Will be true after full flow
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
-            }
-            
-            # Insert profile
-            result = self.supabase.table('profiles').insert(profile_record).execute()
-            
-            if result.data:
-                return {
-                    'success': True,
-                    'message': 'Profile created successfully'
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': 'profile_creation_failed',
-                    'message': 'Failed to create user profile'
-                }
-                
-        except Exception as e:
-            logger.error(f"Error creating user profile: {str(e)}")
-            return {
-                'success': False,
-                'error': 'database_error',
-                'message': 'Database error while creating profile'
-            }
-
     
     def _start_website_scraping(self, site_id: str, domain: str):
         """Start website scraping (simplified for MVP)"""
@@ -888,6 +914,15 @@ def _create_user_profile(self, user_id: str, email: str, profile_data: Dict) -> 
         
         return {'valid': True}
     
+    def _save_uploaded_file(self, file_data: Dict, site_id: str) -> str:
+        """Save uploaded file and return path"""
+        # TODO: Implement actual file saving
+        # - Save to local storage or Supabase Storage
+        # - Generate unique filename
+        # - Return file path
+        
+        # For now,
+
     def _save_uploaded_file(self, file_data: Dict, site_id: str) -> str:
         """Save uploaded file and return path"""
         # TODO: Implement actual file saving
