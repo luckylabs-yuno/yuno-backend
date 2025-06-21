@@ -816,13 +816,11 @@ def resend_raw_test():
         }), 500
 
 
-# REPLACE the duplicate upload endpoints in your routes/onboarding.py file with these fixed versions
-# Alternative approach - Update these endpoints in routes/onboarding.py
-# These versions work with just site_id, no email required
+# Replace these endpoints in routes/onboarding.py - Fixed to use correct column name
 
 @onboarding_bp.route('/upload-text', methods=['POST'])
 def upload_text_content():
-    """Process text content upload - Works without email"""
+    """Process text content upload - Fixed site check"""
     try:
         data = request.get_json()
         site_id = data.get('site_id')
@@ -831,11 +829,11 @@ def upload_text_content():
         if not site_id or not content:
             return jsonify({'error': 'Site ID and content required'}), 400
         
-        # Verify site exists (optional security check)
+        # Verify site exists - FIXED to use site_id column
         site_check = onboarding_service.onboarding_model.supabase\
             .table('sites')\
-            .select('id')\
-            .eq('id', site_id)\
+            .select('site_id')\
+            .eq('site_id', site_id)\
             .single()\
             .execute()
             
@@ -878,7 +876,7 @@ def upload_text_content():
 
 @onboarding_bp.route('/upload-file', methods=['POST'])
 def upload_file_content():
-    """Process file upload - Works without email"""
+    """Process file upload - Fixed site check"""
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
@@ -895,11 +893,11 @@ def upload_file_content():
         if not allowed_file(file.filename):
             return jsonify({'error': f'Invalid file type. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
         
-        # Verify site exists (optional security check)
+        # Verify site exists - FIXED to use site_id column
         site_check = onboarding_service.onboarding_model.supabase\
             .table('sites')\
-            .select('id')\
-            .eq('id', site_id)\
+            .select('site_id')\
+            .eq('site_id', site_id)\
             .single()\
             .execute()
             
@@ -972,7 +970,7 @@ def upload_file_content():
 
 @onboarding_bp.route('/update-contact-info', methods=['POST'])
 def update_contact_info():
-    """Update contact information for site - Works without email"""
+    """Update contact information for site - Fixed site check"""
     try:
         data = request.get_json()
         site_id = data.get('site_id')
@@ -984,11 +982,11 @@ def update_contact_info():
         if not contact_info.get('supportEmail'):
             return jsonify({'error': 'Support email is required'}), 400
         
-        # Verify site exists (optional security check)
+        # Verify site exists - FIXED to use site_id column
         site_check = onboarding_service.onboarding_model.supabase\
             .table('sites')\
-            .select('id')\
-            .eq('id', site_id)\
+            .select('site_id')\
+            .eq('site_id', site_id)\
             .single()\
             .execute()
             
