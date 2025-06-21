@@ -769,3 +769,147 @@ def internal_error(error):
         "Internal server error",
         error_code="internal_error"
     )), 500
+
+# Add this to your routes/onboarding.py
+
+@onboarding_bp.route('/debug/email-comprehensive', methods=['POST', 'OPTIONS'])
+def comprehensive_email_debug():
+    """Comprehensive email service debugging"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
+    try:
+        import os
+        from services.email_service import EmailService
+        
+        data = request.get_json()
+        test_email = data.get('email', 'test@example.com') if data else 'test@example.com'
+        
+        debug_info = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'test_email': test_email
+        }
+        
+        # 1. Check environment variables
+        resend_key = os.getenv('RESEND_API_KEY')
+        from_email = os.getenv('RESEND_FROM_EMAIL')
+        
+        debug_info['environment'] = {
+            'RESEND_API_KEY_set': bool(resend_key),
+            'RESEND_API_KEY_prefix': resend_key[:15] + '...' if resend_key else None,
+            'RESEND_FROM_EMAIL': from_email,
+            'RESEND_FROM_EMAIL_set': bool(from_email)
+        }
+        
+        # 2. Test resend module import
+        try:
+            import resend
+            debug_info['resend_module'] = {
+                'imported': True,
+                'version': getattr(resend, '__version__', 'unknown'),
+                'api_key_set_in_module': hasattr(resend, 'api_key') and bool(resend.api_key)
+            }
+        except Exception as e:
+            debug_info['resend_module'] = {
+                'imported': False,
+                'error': str(e)
+            }
+        
+        # 3. Test EmailService initialization
+        try:
+            email_service = EmailService()
+            debug_info['email_service'] = {
+                'initialized': True,
+                'from_email': email_service.from_email,
+                'api_key_available': bool(email_service.api_key)
+            }
+            
+            # 4. Test connection
+            connection_test = email_service.test_connection()
+            debug_info['connection_test'] = connection_test
+            
+            # 5. Test actual OTP email
+            if connection_test.get('success'):
+                otp_test = email_service.send_otp_email(test_email, '123456')
+                debug_info['otp_email_test'] = otp_test
+            else:
+                debug_info['otp_email_test'] = {
+                    'skipped': 'Connection test failed'
+                }
+                
+        except Exception as e:
+            debug_info['email_service'] = {
+                'initialized': False,
+                'error': str(e),
+                'error_type': type(e).__name__
+            }
+        
+        return jsonify(debug_info), 200
+        
+    except Exception as e:
+        logger.error(f"Comprehensive email debug failed: {str(e)}")
+        return jsonify({
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'timestamp': datetime.utcnow().isoformat()
+        }), 500
+
+
+@onboarding_bp.route('/debug/resend-raw-test', methods=['POST', 'OPTIONS'])
+def resend_raw_test():
+    """Test Resend API directly without our wrapper"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
+    try:
+        import os
+        import resend
+        
+        # Set API key directly
+        api_key = os.getenv('RESEND_API_KEY')
+        from_email = os.getenv('RESEND_FROM_EMAIL', 'say@helloyuno.com')
+        
+        if not api_key:
+            return jsonify({
+                'error': 'RESEND_API_KEY not set',
+                'timestamp': datetime.utcnow().isoformat()
+            }), 400
+        
+        resend.api_key = api_key
+        
+        data = request.get_json()
+        test_email = data.get('email', 'test@example.com') if data else 'test@example.com'
+        
+        # Simple test email
+        params = {
+            "from": from_email,
+            "to": [test_email],
+            "subject": "Yuno API Test",
+            "text": "This is a raw test of the Resend API from Yuno backend."
+        }
+        
+        logger.info(f"🔬 Raw Resend test - API Key: {api_key[:15]}...")
+        logger.info(f"🔬 Raw Resend test - From: {from_email}")
+        logger.info(f"🔬 Raw Resend test - To: {test_email}")
+        
+        response = resend.Emails.send(params)
+        
+        logger.info(f"🔬 Raw Resend response: {response}")
+        
+        return jsonify({
+            'success': True,
+            'params_sent': params,
+            'resend_response': response,
+            'response_type': type(response).__name__,
+            'timestamp': datetime.utcnow().isoformat()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Raw Resend test failed: {str(e)}")
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'traceback': traceback.format_exc(),
+            'timestamp': datetime.utcnow().isoformat()
+        }), 500
