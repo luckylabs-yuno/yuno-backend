@@ -715,15 +715,18 @@ class OnboardingService:
                 'message': 'Failed to create session'
             }
     
-    def _create_user_profile(self, user_id: str, email: str, profile_data: Dict) -> Dict:
+    
+    def _create_user_profile(self, user_id: str, email: str, profile_data: Dict):
         """Create user profile with optional fields"""
         try:
             profile_record = {
                 'id': user_id,
                 'email': email,
-                'name': profile_data.get('name'),
-                'date_of_birth': profile_data.get('date_of_birth'),
-                'country': profile_data.get('country'),
+                'site_id': None,
+                'domain': None,
+                'name': profile_data.get('name', ''),  # Default to empty string
+                'date_of_birth': profile_data.get('date_of_birth', None),  # Allow null
+                'country': profile_data.get('country', ''),  # Default to empty string
                 'onboarding_completed': False,
                 'created_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
@@ -742,15 +745,14 @@ class OnboardingService:
                     'error': 'profile_creation_failed',
                     'message': 'Failed to create user profile'
                 }
-                
         except Exception as e:
             logger.error(f"Error creating user profile: {str(e)}")
             return {
                 'success': False,
                 'error': 'database_error',
-                'message': 'Database error while creating profile'
+                'message': str(e)  # This will help debug the exact error
             }
-    
+
     def _start_website_scraping(self, site_id: str, domain: str):
         """Start website scraping"""
         logger.info(f"🕷️ Starting website scraping for {domain} (site_id: {site_id})")
