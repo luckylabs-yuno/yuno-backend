@@ -156,16 +156,17 @@ class OnboardingService:
     # =============================================================================
     
     def complete_profile_setup(self, temp_token: str, profile_data: Dict) -> Dict:
-        """
-        Complete profile setup with name, DOB, country, password
+    """
+    Complete profile setup - NOW ONLY REQUIRES PASSWORD
+    Optional fields: name, date_of_birth, country (stored for future use)
+    
+    Args:
+        temp_token: Temporary token from OTP verification
+        profile_data: Dict with password (required) and optional profile fields
         
-        Args:
-            temp_token: Temporary token from OTP verification
-            profile_data: Dict with name, date_of_birth, country, password
-            
-        Returns:
-            Dict with success status and user info
-        """
+    Returns:
+        Dict with success status and user info
+    """
         try:
             # Verify temp token
             token_payload = self.jwt_service.verify_token(temp_token)
@@ -184,18 +185,17 @@ class OnboardingService:
                     'message': 'Email not found in token'
                 }
             
-            # Validate required fields
-            required_fields = ['name', 'date_of_birth', 'country', 'password']
-            for field in required_fields:
-                if not profile_data.get(field):
-                    return {
-                        'success': False,
-                        'error': 'missing_field',
-                        'message': f'{field.replace("_", " ").title()} is required'
-                    }
+            # UPDATED: Only password is required now
+            password = profile_data.get('password')
+            if not password:
+                return {
+                    'success': False,
+                    'error': 'missing_password',
+                    'message': 'Password is required'
+                }
             
             # Validate password strength
-            password_validation = self._validate_password(profile_data['password'])
+            password_validation = self._validate_password(password)
             if not password_validation['valid']:
                 return {
                     'success': False,
@@ -205,52 +205,55 @@ class OnboardingService:
                 }
             
             # Create user in Supabase Auth
-            user_result = self._create_supabase_user(email, profile_data['password'])
+            user_result = self._create_supabase_user(email, password)
             if not user_result['success']:
                 return user_result
             
             user_id = user_result['user_id']
             
-            # Create profile record
-            profile_result = self._create_user_profile(user_id, email, profile_data)
-            if not profile_result:
-                return {
-                    'success': False,
-                    'error': 'profile_creation_failed',
-                    'message': 'Failed to create user profile'
-                }
+            # Create profile with optional fields
+            profile_result = self._create_user_profile(user_id, email, {
+                'name': profile_data.get('name'),  # Optional
+                'date_of_birth': profile_data.get('date_of_birth'),  # Optional
+                'country': profile_data.get('country'),  # Optional
+            })
             
-            # Update onboarding session
-            self.onboarding_model.update_onboarding_session(
-                email=email,
-                step=3,
-                session_data={
-                    'profile_completed_at': datetime.utcnow().isoformat(),
-                    'user_id': user_id
-                }
-            )
+            if not profile_result['success']:
+                # Cleanup: delete the auth user if profile creation fails
+                try:
+                    self.supabase_admin.auth.admin.delete_user(user_id)
+                except:
+                    pass
+                return profile_result
+            
+            # Create onboarding session
+            session_result = self._create_onboarding_session(email, {
+                'user_id': user_id,
+                'current_step': 4,  # Move to domain setup
+                'profile_completed': True
+            })
+            
+            if not session_result['success']:
+                return session_result
             
             # Generate access token
-            access_token = self.jwt_service.generate_token({
-                'user_id': user_id,
-                'email': email,
-                'step': 'domain_setup'
-            }, expiry_seconds=3600)  # 1 hour
+            access_token = self.jwt_service.generate_access_token(user_id, email)
             
             return {
                 'success': True,
-                'message': 'Profile created successfully',
+                'message': 'Account created successfully',
                 'user_id': user_id,
                 'access_token': access_token
             }
             
         except Exception as e:
-            logger.error(f"Error completing profile setup: {str(e)}")
+            logger.error(f"Error in complete_profile_setup: {str(e)}")
             return {
                 'success': False,
-                'error': 'setup_failed',
-                'message': 'Profile setup failed'
+                'error': 'internal_error',
+                'message': 'An error occurred while creating your account'
             }
+
     
     # =============================================================================
     # STEP 4: DOMAIN SETUP
@@ -753,28 +756,49 @@ class OnboardingService:
                 'error': 'auth_error',
                 'message': 'Authentication system error'
             }
-    
-    def _create_user_profile(self, user_id: str, email: str, profile_data: Dict) -> bool:
-        """Create user profile record"""
+    # ============================================================================
+# UPDATED _create_user_profile method to handle optional fields
+# ============================================================================
+
+def _create_user_profile(self, user_id: str, email: str, profile_data: Dict) -> Dict:
+        """
+        Create user profile with optional fields
+        """
         try:
-            # This will be updated once we have the site_id
-            self.onboarding_model.supabase.table('profiles').insert({
+            profile_record = {
                 'id': user_id,
-                'site_id': 'pending',  # Will be updated in domain setup
-                'domain': 'pending',   # Will be updated in domain setup
-                'name': profile_data['name'],
-                'date_of_birth': profile_data['date_of_birth'],
-                'country': profile_data['country'],
-                'plan': 'free-trial',
-                'metadata': {'email': email},
-                'onboarding_completed': False
-            }).execute()
+                'email': email,
+                'name': profile_data.get('name'),  # Can be None
+                'date_of_birth': profile_data.get('date_of_birth'),  # Can be None
+                'country': profile_data.get('country'),  # Can be None
+                'onboarding_completed': False,  # Will be true after full flow
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
             
-            return True
+            # Insert profile
+            result = self.supabase.table('profiles').insert(profile_record).execute()
             
+            if result.data:
+                return {
+                    'success': True,
+                    'message': 'Profile created successfully'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'profile_creation_failed',
+                    'message': 'Failed to create user profile'
+                }
+                
         except Exception as e:
             logger.error(f"Error creating user profile: {str(e)}")
-            return False
+            return {
+                'success': False,
+                'error': 'database_error',
+                'message': 'Database error while creating profile'
+            }
+
     
     def _start_website_scraping(self, site_id: str, domain: str):
         """Start website scraping (simplified for MVP)"""

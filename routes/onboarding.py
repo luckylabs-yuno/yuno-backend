@@ -117,15 +117,23 @@ def verify_otp():
         )), 500
 
 
-# =============================================================================
-# STEP 3: PROFILE SETUP
-# =============================================================================
+# ============================================================================
+# UPDATED onboarding.py - Profile Endpoint
+# Remove mandatory field validation
+# ============================================================================
 
 @onboarding_bp.route('/complete-profile', methods=['POST', 'OPTIONS'])
 def complete_profile():
     """
-    Complete profile setup with name, DOB, country, password
+    Complete profile setup - UPDATED TO ONLY REQUIRE PASSWORD
     POST /onboarding/complete-profile
+    
+    Body: {
+        "password": "required_password",
+        "name": "optional_name",
+        "date_of_birth": "optional_date",
+        "country": "optional_country"
+    }
     """
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
@@ -146,15 +154,14 @@ def complete_profile():
                 "Profile data is required"
             )), 400
         
-        # Validate required fields
-        required_fields = ['name', 'date_of_birth', 'country', 'password']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify(ResponseHelpers.error_response(
-                    f"{field.replace('_', ' ').title()} is required"
-                )), 400
+        # UPDATED: Only validate password is required
+        password = data.get('password')
+        if not password:
+            return jsonify(ResponseHelpers.error_response(
+                "Password is required"
+            )), 400
         
-        # Complete profile setup
+        # Complete profile setup with only password required
         result = onboarding_service.complete_profile_setup(temp_token, data)
         
         if result['success']:
@@ -178,6 +185,7 @@ def complete_profile():
         return jsonify(ResponseHelpers.error_response(
             "An error occurred while completing profile"
         )), 500
+
 
 
 # =============================================================================
