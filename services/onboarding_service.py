@@ -1,3 +1,7 @@
+
+# UPDATED: services/onboarding_service.py
+# Add EmailService import and integration
+
 """
 Onboarding service - business logic for user onboarding flow
 Integrates with your existing services
@@ -13,6 +17,7 @@ import time
 # Import your existing services
 from .jwt_service import JWTService
 from .domain_service import DomainService
+from .email_service import EmailService  # ADD THIS IMPORT
 from models.onboarding import OnboardingModel
 from utils.helpers import ValidationHelpers, SecurityHelpers
 
@@ -23,6 +28,7 @@ class OnboardingService:
         self.onboarding_model = OnboardingModel()
         self.jwt_service = JWTService()
         self.domain_service = DomainService()
+        self.email_service = EmailService()  # ADD THIS LINE
     
     # =============================================================================
     # STEP 1: EMAIL & OTP
@@ -57,8 +63,15 @@ class OnboardingService:
             if os.getenv('FLASK_ENV') == 'development':
                 logger.info(f"🔑 OTP for {email}: {otp_code}")
             
-            # Send OTP email
-            self._send_otp_email(email, otp_code)
+            # FIXED: Actually send OTP email using EmailService
+            email_result = self._send_otp_email(email, otp_code)
+            if not email_result['success']:
+                logger.error(f"Failed to send OTP email: {email_result}")
+                return {
+                    'success': False,
+                    'error': 'email_send_failed',
+                    'message': email_result.get('message', 'Failed to send OTP email')
+                }
             
             # Create or update onboarding session
             self.onboarding_model.update_onboarding_session(
@@ -80,6 +93,7 @@ class OnboardingService:
                 'error': 'send_failed',
                 'message': 'Failed to send OTP. Please try again.'
             }
+
     
     def verify_otp(self, email: str, otp_code: str) -> Dict:
         """Verify OTP and return temporary token"""
@@ -606,9 +620,36 @@ class OnboardingService:
     # PRIVATE HELPER METHODS
     # =============================================================================
     
-    def _send_otp_email(self, email: str, otp_code: str):
-        """Send OTP email"""
-        logger.info(f"📧 Sending OTP {otp_code} to {email}")
+    def _send_otp_email(self, email: str, otp_code: str) -> Dict:
+        """FIXED: Send OTP email using EmailService"""
+        try:
+            logger.info(f"📧 Attempting to send OTP {otp_code} to {email}")
+            
+            # Use the EmailService to actually send the email
+            result = self.email_service.send_otp_email(email, otp_code)
+            
+            if result['success']:
+                logger.info(f"✅ OTP email sent successfully to {email}, Resend ID: {result.get('email_id')}")
+                return {
+                    'success': True,
+                    'message': 'OTP email sent successfully',
+                    'email_id': result.get('email_id')
+                }
+            else:
+                logger.error(f"❌ Failed to send OTP email to {email}: {result.get('message')}")
+                return {
+                    'success': False,
+                    'error': 'email_send_failed',
+                    'message': result.get('message', 'Failed to send OTP email')
+                }
+                
+        except Exception as e:
+            logger.error(f"💥 Error in _send_otp_email: {str(e)}")
+            return {
+                'success': False,
+                'error': 'email_service_error',
+                'message': f'Email service error: {str(e)}'
+            }
     
     def _validate_password(self, password: str) -> Dict:
         """Validate password strength"""
