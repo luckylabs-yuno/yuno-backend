@@ -817,36 +817,30 @@ def resend_raw_test():
 
 
 # REPLACE the duplicate upload endpoints in your routes/onboarding.py file with these fixed versions
+# Alternative approach - Update these endpoints in routes/onboarding.py
+# These versions work with just site_id, no email required
 
 @onboarding_bp.route('/upload-text', methods=['POST'])
 def upload_text_content():
-    """Process text content upload - FIXED VERSION"""
+    """Process text content upload - Works without email"""
     try:
-        # Get JWT token from header
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return jsonify({'error': 'Authorization token required'}), 401
-            
-        access_token = auth_header.replace('Bearer ', '')
-        
-        # Verify token and get user info
-        from services.jwt_service import JWTService
-        jwt_service = JWTService()
-        token_payload = jwt_service.verify_token(access_token)
-        
-        if not token_payload:
-            return jsonify({'error': 'Invalid or expired token'}), 401
-            
-        email = token_payload.get('email')
-        if not email:
-            return jsonify({'error': 'Email not found in token'}), 401
-        
         data = request.get_json()
         site_id = data.get('site_id')
         content = data.get('content')
         
         if not site_id or not content:
             return jsonify({'error': 'Site ID and content required'}), 400
+        
+        # Verify site exists (optional security check)
+        site_check = onboarding_service.onboarding_model.supabase\
+            .table('sites')\
+            .select('id')\
+            .eq('id', site_id)\
+            .single()\
+            .execute()
+            
+        if not site_check.data:
+            return jsonify({'error': 'Invalid site ID'}), 404
         
         # Create upload record
         upload_id = str(uuid.uuid4())
@@ -871,13 +865,6 @@ def upload_text_content():
             .eq('id', upload_id)\
             .execute()
         
-        # Update onboarding session if needed
-        if result['success']:
-            onboarding_service.onboarding_model.update_onboarding_session(
-                email=email,
-                session_data={'text_content_uploaded': True}
-            )
-        
         return jsonify({
             'success': result['success'],
             'upload_id': upload_id,
@@ -891,27 +878,8 @@ def upload_text_content():
 
 @onboarding_bp.route('/upload-file', methods=['POST'])
 def upload_file_content():
-    """Process file upload - FIXED VERSION"""
+    """Process file upload - Works without email"""
     try:
-        # Get JWT token from header
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return jsonify({'error': 'Authorization token required'}), 401
-            
-        access_token = auth_header.replace('Bearer ', '')
-        
-        # Verify token and get user info
-        from services.jwt_service import JWTService
-        jwt_service = JWTService()
-        token_payload = jwt_service.verify_token(access_token)
-        
-        if not token_payload:
-            return jsonify({'error': 'Invalid or expired token'}), 401
-            
-        email = token_payload.get('email')
-        if not email:
-            return jsonify({'error': 'Email not found in token'}), 401
-            
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
             
@@ -926,6 +894,17 @@ def upload_file_content():
             
         if not allowed_file(file.filename):
             return jsonify({'error': f'Invalid file type. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
+        
+        # Verify site exists (optional security check)
+        site_check = onboarding_service.onboarding_model.supabase\
+            .table('sites')\
+            .select('id')\
+            .eq('id', site_id)\
+            .single()\
+            .execute()
+            
+        if not site_check.data:
+            return jsonify({'error': 'Invalid site ID'}), 404
         
         # Check file size (25MB limit)
         file.seek(0, os.SEEK_END)
@@ -981,13 +960,6 @@ def upload_file_content():
             .eq('id', upload_id)\
             .execute()
         
-        # Update onboarding session if needed
-        if result['success']:
-            onboarding_service.onboarding_model.update_onboarding_session(
-                email=email,
-                session_data={'file_uploaded': True}
-            )
-        
         return jsonify({
             'success': result['success'],
             'upload_id': upload_id,
@@ -1000,27 +972,8 @@ def upload_file_content():
 
 @onboarding_bp.route('/update-contact-info', methods=['POST'])
 def update_contact_info():
-    """Update contact information for site - FIXED VERSION"""
+    """Update contact information for site - Works without email"""
     try:
-        # Get JWT token from header
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return jsonify({'error': 'Authorization token required'}), 401
-            
-        access_token = auth_header.replace('Bearer ', '')
-        
-        # Verify token and get user info
-        from services.jwt_service import JWTService
-        jwt_service = JWTService()
-        token_payload = jwt_service.verify_token(access_token)
-        
-        if not token_payload:
-            return jsonify({'error': 'Invalid or expired token'}), 401
-            
-        email = token_payload.get('email')
-        if not email:
-            return jsonify({'error': 'Email not found in token'}), 401
-        
         data = request.get_json()
         site_id = data.get('site_id')
         contact_info = data.get('contact_info', {})
@@ -1031,17 +984,21 @@ def update_contact_info():
         if not contact_info.get('supportEmail'):
             return jsonify({'error': 'Support email is required'}), 400
         
+        # Verify site exists (optional security check)
+        site_check = onboarding_service.onboarding_model.supabase\
+            .table('sites')\
+            .select('id')\
+            .eq('id', site_id)\
+            .single()\
+            .execute()
+            
+        if not site_check.data:
+            return jsonify({'error': 'Invalid site ID'}), 404
+        
         # Process contact info
         success = content_processor.process_contact_info(site_id, contact_info)
         
         if success:
-            # Update session
-            onboarding_service.onboarding_model.update_onboarding_session(
-                email=email,
-                step=5,
-                session_data={'contact_info_added': True}
-            )
-            
             return jsonify({
                 'success': True,
                 'message': 'Contact information updated'
