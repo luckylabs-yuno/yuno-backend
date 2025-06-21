@@ -4,6 +4,7 @@ Onboarding API routes - extends your existing Flask app
 from flask import Blueprint, request, jsonify
 import logging
 from datetime import datetime
+from services.jwt_service import JWTService
 
 # Import your existing services
 from services.onboarding_service import OnboardingService
@@ -295,127 +296,6 @@ def get_scraping_status(site_id):
         )), 500
 
 
-# =============================================================================
-# STEP 5: CONTENT UPLOAD
-# =============================================================================
-
-@onboarding_bp.route('/upload-text', methods=['POST', 'OPTIONS'])
-def upload_text():
-    """
-    Upload text content for processing
-    POST /onboarding/upload-text
-    """
-    if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'}), 200
-    
-    try:
-        # Get access token
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return jsonify(ResponseHelpers.error_response(
-                "Authorization token is required"
-            )), 401
-        
-        access_token = auth_header.replace('Bearer ', '')
-        
-        data = request.get_json()
-        if not data:
-            return jsonify(ResponseHelpers.error_response(
-                "Text content is required"
-            )), 400
-        
-        text_content = data.get('content')
-        if not text_content:
-            return jsonify(ResponseHelpers.error_response(
-                "Text content is required"
-            )), 400
-        
-        # Upload text content
-        result = onboarding_service.upload_text_content(access_token, text_content)
-        
-        if result['success']:
-            return jsonify(ResponseHelpers.success_response(
-                data={
-                    'upload_id': result['upload_id']
-                },
-                message=result['message']
-            )), 200
-        else:
-            status_code = 401 if result.get('error') == 'invalid_token' else 400
-            return jsonify(ResponseHelpers.error_response(
-                result['message'],
-                error_code=result.get('error')
-            )), status_code
-            
-    except Exception as e:
-        logger.error(f"Error in upload-text endpoint: {str(e)}")
-        return jsonify(ResponseHelpers.error_response(
-            "An error occurred while uploading text content"
-        )), 500
-
-
-@onboarding_bp.route('/upload-file', methods=['POST', 'OPTIONS'])
-def upload_file():
-    """
-    Upload file for processing
-    POST /onboarding/upload-file
-    """
-    if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'}), 200
-    
-    try:
-        # Get access token
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return jsonify(ResponseHelpers.error_response(
-                "Authorization token is required"
-            )), 401
-        
-        access_token = auth_header.replace('Bearer ', '')
-        
-        # Check if file is present
-        if 'file' not in request.files:
-            return jsonify(ResponseHelpers.error_response(
-                "No file provided"
-            )), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify(ResponseHelpers.error_response(
-                "No file selected"
-            )), 400
-        
-        # Prepare file data
-        file_data = {
-            'name': file.filename,
-            'type': file.content_type,
-            'size': len(file.read()),
-            'content': file.read()
-        }
-        file.seek(0)  # Reset file pointer
-        
-        # Upload file
-        result = onboarding_service.upload_file(access_token, file_data)
-        
-        if result['success']:
-            return jsonify(ResponseHelpers.success_response(
-                data={
-                    'upload_id': result['upload_id']
-                },
-                message=result['message']
-            )), 200
-        else:
-            status_code = 401 if result.get('error') == 'invalid_token' else 400
-            return jsonify(ResponseHelpers.error_response(
-                result['message'],
-                error_code=result.get('error')
-            )), status_code
-            
-    except Exception as e:
-        logger.error(f"Error in upload-file endpoint: {str(e)}")
-        return jsonify(ResponseHelpers.error_response(
-            "An error occurred while uploading file"
-        )), 500
 
 
 # =============================================================================
@@ -935,48 +815,32 @@ def resend_raw_test():
             'timestamp': datetime.utcnow().isoformat()
         }), 500
 
-@onboarding_bp.route('/update-contact-info', methods=['POST'])
-def update_contact_info():
-    """Update contact information for site"""
-    try:
-        data = request.get_json()
-        site_id = data.get('site_id')
-        contact_info = data.get('contact_info', {})
-        
-        if not site_id:
-            return jsonify({'error': 'Site ID required'}), 400
-            
-        if not contact_info.get('supportEmail'):
-            return jsonify({'error': 'Support email is required'}), 400
-        
-        # Process contact info
-        success = content_processor.process_contact_info(site_id, contact_info)
-        
-        if success:
-            # Update session
-            email = data.get('email')  # You might get this from JWT token instead
-            if email:
-                onboarding_service.onboarding_model.update_onboarding_session(
-                    email=email,
-                    step=5,
-                    session_data={'contact_info_added': True}
-                )
-            
-            return jsonify({
-                'success': True,
-                'message': 'Contact information updated'
-            })
-        else:
-            return jsonify({'error': 'Failed to update contact info'}), 500
-            
-    except Exception as e:
-        logger.error(f"Error updating contact info: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+
+# REPLACE the duplicate upload endpoints in your routes/onboarding.py file with these fixed versions
 
 @onboarding_bp.route('/upload-text', methods=['POST'])
 def upload_text_content():
-    """Process text content upload"""
+    """Process text content upload - FIXED VERSION"""
     try:
+        # Get JWT token from header
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization token required'}), 401
+            
+        access_token = auth_header.replace('Bearer ', '')
+        
+        # Verify token and get user info
+        from services.jwt_service import JWTService
+        jwt_service = JWTService()
+        token_payload = jwt_service.verify_token(access_token)
+        
+        if not token_payload:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+            
+        email = token_payload.get('email')
+        if not email:
+            return jsonify({'error': 'Email not found in token'}), 401
+        
         data = request.get_json()
         site_id = data.get('site_id')
         content = data.get('content')
@@ -1007,6 +871,13 @@ def upload_text_content():
             .eq('id', upload_id)\
             .execute()
         
+        # Update onboarding session if needed
+        if result['success']:
+            onboarding_service.onboarding_model.update_onboarding_session(
+                email=email,
+                session_data={'text_content_uploaded': True}
+            )
+        
         return jsonify({
             'success': result['success'],
             'upload_id': upload_id,
@@ -1020,8 +891,27 @@ def upload_text_content():
 
 @onboarding_bp.route('/upload-file', methods=['POST'])
 def upload_file_content():
-    """Process file upload"""
+    """Process file upload - FIXED VERSION"""
     try:
+        # Get JWT token from header
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization token required'}), 401
+            
+        access_token = auth_header.replace('Bearer ', '')
+        
+        # Verify token and get user info
+        from services.jwt_service import JWTService
+        jwt_service = JWTService()
+        token_payload = jwt_service.verify_token(access_token)
+        
+        if not token_payload:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+            
+        email = token_payload.get('email')
+        if not email:
+            return jsonify({'error': 'Email not found in token'}), 401
+            
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
             
@@ -1091,6 +981,13 @@ def upload_file_content():
             .eq('id', upload_id)\
             .execute()
         
+        # Update onboarding session if needed
+        if result['success']:
+            onboarding_service.onboarding_model.update_onboarding_session(
+                email=email,
+                session_data={'file_uploaded': True}
+            )
+        
         return jsonify({
             'success': result['success'],
             'upload_id': upload_id,
@@ -1100,6 +997,61 @@ def upload_file_content():
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}")
         return jsonify({'error': 'Failed to process file'}), 500
+
+@onboarding_bp.route('/update-contact-info', methods=['POST'])
+def update_contact_info():
+    """Update contact information for site - FIXED VERSION"""
+    try:
+        # Get JWT token from header
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization token required'}), 401
+            
+        access_token = auth_header.replace('Bearer ', '')
+        
+        # Verify token and get user info
+        from services.jwt_service import JWTService
+        jwt_service = JWTService()
+        token_payload = jwt_service.verify_token(access_token)
+        
+        if not token_payload:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+            
+        email = token_payload.get('email')
+        if not email:
+            return jsonify({'error': 'Email not found in token'}), 401
+        
+        data = request.get_json()
+        site_id = data.get('site_id')
+        contact_info = data.get('contact_info', {})
+        
+        if not site_id:
+            return jsonify({'error': 'Site ID required'}), 400
+            
+        if not contact_info.get('supportEmail'):
+            return jsonify({'error': 'Support email is required'}), 400
+        
+        # Process contact info
+        success = content_processor.process_contact_info(site_id, contact_info)
+        
+        if success:
+            # Update session
+            onboarding_service.onboarding_model.update_onboarding_session(
+                email=email,
+                step=5,
+                session_data={'contact_info_added': True}
+            )
+            
+            return jsonify({
+                'success': True,
+                'message': 'Contact information updated'
+            })
+        else:
+            return jsonify({'error': 'Failed to update contact info'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error updating contact info: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @onboarding_bp.route('/upload-status/<upload_id>', methods=['GET'])
 def get_upload_status(upload_id):
