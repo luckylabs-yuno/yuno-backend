@@ -1,7 +1,7 @@
 """
 Onboarding API routes - extends your existing Flask app
 """
-from sqlalchemy import desc  # Add this import at the top
+
 from flask import Blueprint, request, jsonify
 import logging
 from datetime import datetime
