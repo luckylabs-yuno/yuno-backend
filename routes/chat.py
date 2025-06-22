@@ -176,28 +176,47 @@ IMPORTANT
 """
 
 REWRITER_PROMPT = """
-You are an assistant that rewrites a user's query using recent chat history.
-Your goal is to combine the current user message and past conversation into
-a clear, standalone query. Use complete language. Do not mention the history.
+You are an assistant that rewrites a user's query using recent chat history and detects the language.
 
-For eg -
-User - Tell me about your services?
-You - We offer MBA, BBA, MTech
-User - Wow, tell me about second one?
+Your goals:
+1. Combine the current user message and past conversation into a clear, standalone query in ENGLISH
+2. Detect the original language of the user's latest message  
+3. Return a JSON response with both pieces of information
 
-so in this case you will respond with this type of query - "Wow can you tell me more about your BBA services"
+Query Rewriting Guidelines:
+- Create a complete, standalone query that incorporates relevant context from chat history
+- The rewritten query should be optimized for RAG-based vector search
+- Use complete, meaningful language that captures the user's intent
+- If the latest message is unrelated to previous conversation, just rewrite the latest message properly
+- Do not mention the chat history explicitly in the rewritten query
 
-The idea is we will use this for RAG based vector search, so we will need exact query so that query is as meaningful as possible.
-IF You think that latest User message is not related to previous conversation and it would make sense for RAG search to just use the latest message, so just rewrite the latest message properly.
-Just output the rewritten query as a single sentence.
+Language Detection:
+- Detect the language of the user's LATEST message only
+- Use these language codes: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
+- For other languages, use the full language name in lowercase
+- If conversational (hi, thanks, bye), still detect the language
+- If language cannot be determined, use "unknown"
+
+Examples:
+- User message: "¿Cuál es tu precio?" 
+- Response: {"rewritten_prompt": "What is your pricing?", "ques_lang": "spanish"}
+
+- Previous: "Tell me about your services?" / Assistant: "We offer MBA, BBA, MTech" / User: "Wow, tell me about second one?"
+- Response: {"rewritten_prompt": "Tell me more about your BBA services", "ques_lang": "english"}
+
+- User message: "आपकी सेवाएं क्या हैं?"
+- Response: {"rewritten_prompt": "What are your services?", "ques_lang": "hindi"}
+
+Always respond with valid JSON only.
 
 Chat History:
 {history}
 
-User's New Message:
+User's Latest Message:
 {latest}
 
-Rewritten Query:
+Sample JSON Response:
+{"rewritten_prompt": "What is your pricing?", "ques_lang": "spanish"}
 """
 
 SYSTEM_PROMPT_2 = """
@@ -356,8 +375,12 @@ def insert_lead(lead_data):
     except Exception as e:
         logger.error(f"Error inserting lead: {str(e)}")
 
-def rewrite_query_with_context(history: List[dict], latest: str) -> str:
-    """Rewrite user query with chat history context for better RAG search"""
+
+def rewrite_query_with_context_and_language(history: List[dict], latest: str) -> dict:
+    """
+    Rewrite user query with chat history context and detect language
+    Returns: {"rewritten_prompt": str, "ques_lang": str}
+    """
     try:
         chat_log = "\n".join([
             f"{'You' if m['role'] in ['assistant', 'yuno', 'bot'] else 'User'}: {m['content']}"
@@ -372,10 +395,25 @@ def rewrite_query_with_context(history: List[dict], latest: str) -> str:
             temperature=0.3
         )
 
-        return response.choices[0].message.content.strip()
+        result_text = response.choices[0].message.content.strip()
+        
+        # Extract JSON from response (in case of extra text)
+        import re
+        match = re.search(r'\{.*\}', result_text, re.DOTALL)
+        if match:
+            result_json = json.loads(match.group(0))
+            return {
+                "rewritten_prompt": result_json.get("rewritten_prompt", latest),
+                "ques_lang": result_json.get("ques_lang", "english")
+            }
+        else:
+            # Fallback if JSON parsing fails
+            return {"rewritten_prompt": latest, "ques_lang": "english"}
+            
     except Exception as e:
-        logger.warning("Query rewrite failed: %s", str(e))
-        return latest
+        logger.warning("Query rewrite with language detection failed: %s", str(e))
+        # Fallback to original query and default language
+        return {"rewritten_prompt": latest, "ques_lang": "english"}
 
 # JWT Token Authentication Decorator
 def require_widget_token(f):
@@ -535,14 +573,19 @@ def advanced_ask_endpoint():
                 ]
             })
         
-        # Rewrite query with context for better RAG search
-        rewritten_query = rewrite_query_with_context(recent_history, latest_user_query)
+
+        # NEW: Rewrite query with context and detect language
+        rewrite_result = rewrite_query_with_context_and_language(recent_history, latest_user_query)
+        rewritten_query = rewrite_result["rewritten_prompt"]
+        detected_language = rewrite_result["ques_lang"]
+
         
         if mp:
             mp.track(distinct_id, "query_rewritten", {
                 "site_id": site_id,
                 "session_id": session_id,
                 "original_query": latest_user_query,
+                "detected_language": detected_language,
                 "rewritten_query": rewritten_query,
                 "chat_context_used": [
                     {
@@ -611,8 +654,23 @@ def advanced_ask_endpoint():
             logger.warning(f"Couldn't load custom_detail for site {site_id}: {e}")
             custom_prompt = None
         
+        language_instruction = ""
+        if detected_language != "english":
+            language_map = {
+                "spanish": "Spanish",
+                "hindi": "Hindi", 
+                "bengali": "Bengali",
+                "arabic": "Arabic",
+                "french": "French",
+                "german": "German",
+                "portuguese": "Portuguese",
+                "italian": "Italian"
+            }
+            lang_name = language_map.get(detected_language, detected_language.title())
+            language_instruction = f"\n\nIMPORTANT: The user wrote their message in {lang_name}. You MUST respond in {lang_name}. Write your entire 'content' field response in {lang_name}."
+
         # Build focused prompt with context
-        focused_prompt = f"{latest_user_query}\n\nRelevant website content:\n{context}"
+        focused_prompt = f"{latest_user_query}\n\nRelevant website content:\n{context}{language_instruction}"
         updated_messages.append({
             "role": "user",
             "content": focused_prompt
@@ -684,7 +742,7 @@ def advanced_ask_endpoint():
             site_id, session_id, user_id, page_url,
             "assistant", assistant_content,
             raw_json_output=json.dumps(reply_json),
-            lang=lang,
+            lang=detected_language,  # Store detected language
             confidence=confidence,
             intent=intent_label,
             tokens_used=tokens_used,
