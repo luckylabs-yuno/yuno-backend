@@ -10,6 +10,10 @@ from sentry_sdk.integrations.flask import FlaskIntegration
 import redis
 from datetime import datetime
 from werkzeug.utils import secure_filename
+from routes.dashboard import dashboard_bp
+
+# Add this line after your existing blueprint registrations
+app.register_blueprint(dashboard_bp)
 
 # Load environment variables
 load_dotenv()
