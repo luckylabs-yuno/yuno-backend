@@ -120,7 +120,7 @@ one of the schemas below—no markdown, no plain text.
   "content":               "<short helpful response>",
   "role":                  "yuno",
   "leadTriggered":         false,
-  "lang":                  "<two-letter code, e.g. \"en\">",
+  "lang":                  "english",
   "answer_confidence":     <float 0.00–1.00>,
   "intent":                "<one of ProductInquiry, PricingInquiry, BookingInquiry, SupportRequest, SmallTalk, Complaint, LeadCapture, Other>",
   "tokens_used":           <integer>,
@@ -142,7 +142,7 @@ one of the schemas below—no markdown, no plain text.
     "phone":  "<extracted phone or null>",
     "intent": "<one-sentence summary of what they want>"
   },
-  "lang":                  "<two-letter code>",
+  "lang":                  "hindi",
   "answer_confidence":     <float 0.00–1.00>,
   "intent":                "<one of ProductInquiry, PricingInquiry, BookingInquiry, SupportRequest, SmallTalk, Complaint, LeadCapture, Other>",
   "tokens_used":           <integer>,
@@ -158,7 +158,7 @@ one of the schemas below—no markdown, no plain text.
   "content":               "Hmm, I don't have that on hand—feel free to email us at care@example.com!",
   "role":                  "yuno",
   "leadTriggered":         false,
-  "lang":                  "<two-letter code>",
+  "lang":                  "spanish",
   "answer_confidence":     0.00,
   "intent":                "Other",
   "tokens_used":           <integer>,
@@ -235,7 +235,7 @@ Remember You Just have to reply ONLY IN JSON, refer below for reference -
     "intent": "<brief summary of what the visitor wants>"
   },
 
-  "lang":                  "<two-letter code>",
+  "lang":                  "hindi",
   "answer_confidence":      <float 0-1>,
   "intent":                "<label>",
   "tokens_used":            <integer>,
