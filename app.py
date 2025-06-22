@@ -10,10 +10,7 @@ from sentry_sdk.integrations.flask import FlaskIntegration
 import redis
 from datetime import datetime
 from werkzeug.utils import secure_filename
-from routes.dashboard import dashboard_bp
 
-# Add this line after your existing blueprint registrations
-app.register_blueprint(dashboard_bp)
 
 # Load environment variables
 load_dotenv()
@@ -91,9 +88,11 @@ def get_site_id_key():
 from routes.auth import auth_bp
 from routes.chat import chat_bp
 from routes.onboarding import onboarding_bp  # NEW IMPORT
+from routes.dashboard import dashboard_bp  # Add this import
 
 # Register blueprints
 app.register_blueprint(onboarding_bp, url_prefix='/onboarding')  # NEW REGISTRATION - Onboarding endpoints
+app.register_blueprint(dashboard_bp)  # Add this registration
 app.register_blueprint(auth_bp, url_prefix='/widget')            # Widget authentication
 app.register_blueprint(chat_bp, url_prefix='/')                  # Chat endpoints
 
