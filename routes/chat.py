@@ -705,7 +705,7 @@ def advanced_ask_endpoint():
         
         # Call OpenAI (v1.0+ syntax)
         completion = openai_client.chat.completions.create(
-            model="gpt-4.1-nano-2025-04-14",
+            model="gpt-4.1-mini-2025-04-14",
             messages=updated_messages,
             temperature=0.5
         )
