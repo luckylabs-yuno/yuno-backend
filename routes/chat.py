@@ -392,8 +392,7 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
         response = openai_client.chat.completions.create(
             model="gpt-4.1-nano-2025-04-14",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
-            top_p=0.9
+            temperature=0.5
         )
 
         result_text = response.choices[0].message.content.strip()
@@ -708,8 +707,7 @@ def advanced_ask_endpoint():
         completion = openai_client.chat.completions.create(
             model="gpt-4.1-nano-2025-04-14",
             messages=updated_messages,
-            temperature=0.4,
-            top_p=0.9
+            temperature=0.5
         )
         
         raw_reply = completion.choices[0].message.content.strip()
