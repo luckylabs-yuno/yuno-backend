@@ -390,9 +390,10 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
         prompt = REWRITER_PROMPT.format(history=chat_log, latest=latest)
 
         response = openai_client.chat.completions.create(
-            model="gpt-4.1-mini-2025-04-14",
+            model="gpt-4.1-nano-2025-04-14",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+            temperature=0.5,
+            top_p=0.9
         )
 
         result_text = response.choices[0].message.content.strip()
@@ -688,6 +689,11 @@ def advanced_ask_endpoint():
             "role": "system",
             "content": SYSTEM_PROMPT_2
         })
+        # Add final language prompt to ensure JSON response
+        updated_messages.append({
+            "role": "system",
+            "content": language_instruction
+        })
         
         sentry_sdk.set_extra("gpt_prompt", focused_prompt)
         
@@ -700,9 +706,10 @@ def advanced_ask_endpoint():
         
         # Call OpenAI (v1.0+ syntax)
         completion = openai_client.chat.completions.create(
-            model="gpt-4.1-2025-04-14",
+            model="gpt-4.1-nano-2025-04-14",
             messages=updated_messages,
-            temperature=0.5
+            temperature=0.4,
+            top_p=0.9
         )
         
         raw_reply = completion.choices[0].message.content.strip()
