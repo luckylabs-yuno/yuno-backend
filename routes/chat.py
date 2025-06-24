@@ -719,11 +719,11 @@ def advanced_ask_endpoint():
         if is_shopify and needs_mcp and shopify_domain:
             try:
                 # Connect to MCP
-                shopify_mcp_service.connect(shopify_domain)
+                shopify_mcp_service.connect_sync(shopify_domain)
                 
                 # Route to appropriate MCP function
                 if query_type == 'product_search':
-                    mcp_response = shopify_mcp_service.search_products(
+                    mcp_response = shopify_mcp_service.search_products_sync(
                         rewritten_query,
                         search_parameters
                     )
@@ -738,7 +738,7 @@ def advanced_ask_endpoint():
                         })
                         
                 elif query_type == 'policy_question':
-                    mcp_response = shopify_mcp_service.get_policies()
+                    mcp_response = shopify_mcp_service.get_policies_sync()
                     mcp_context['policies'] = mcp_response.get('policies', {})
                     
                     if mp:
