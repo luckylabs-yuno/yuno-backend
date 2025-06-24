@@ -436,3 +436,18 @@ def clean_and_validate_domain(domain: str) -> tuple[str, bool]:
 def log_security_event(event_type: str, **kwargs):
     """Convenience function for logging security events"""
     LoggingHelpers.log_security_event(event_type, **kwargs)
+
+@staticmethod
+def build_hybrid_context(website_context, mcp_context, messages, is_shopify, response_language):
+    context = {
+        "messages": messages,
+        "website_context": website_context,
+        "response_language": response_language
+    }
+    
+    if is_shopify and mcp_context:
+        context["product_context"] = mcp_context.get('products', [])
+        context["policy_context"] = mcp_context.get('policies', {})
+        context["available_actions"] = ["add_to_cart", "view_details"]
+    
+    return context

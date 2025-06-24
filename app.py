@@ -95,7 +95,8 @@ app.register_blueprint(onboarding_bp, url_prefix='/onboarding')  # NEW REGISTRAT
 app.register_blueprint(dashboard_bp)  # Add this registration
 app.register_blueprint(auth_bp, url_prefix='/widget')            # Widget authentication
 app.register_blueprint(chat_bp, url_prefix='/')                  # Chat endpoints
-
+from routes.shopify import shopify_bp
+app.register_blueprint(shopify_bp, url_prefix='/shopify')
 # Preflight handler - FIXED VERSION
 @app.before_request
 def handle_preflight():

@@ -13,6 +13,7 @@ from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
+from services.shopify_mcp_service import ShopifyMCPService
 
 # Import OpenAI v1.0+ style
 from openai import OpenAI
@@ -25,6 +26,7 @@ jwt_service = JWTService()
 domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
+shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
 
 # Environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -176,36 +178,75 @@ IMPORTANT
 """
 
 REWRITER_PROMPT = """
-You are an assistant that rewrites a user's query using recent chat history and detects the language.
+You are an assistant that rewrites a user's query using recent chat history, detects the language, and determines routing needs.
 
 Your goals:
 1. Combine the current user message and past conversation into a clear, standalone query in ENGLISH
 2. Detect the original language of the user's latest message  
-3. Return a JSON response with both pieces of information
+3. Classify the query type and determine data source routing
+4. Extract search parameters for product queries
+5. Return a JSON response with all information
 
-Query Rewriting Guidelines:
-- Create a complete, standalone query that incorporates relevant context from chat history
-- The rewritten query should be optimized for RAG-based vector search
-- Use complete, meaningful language that captures the user's intent
-- If the latest message is unrelated to previous conversation, just rewrite the latest message properly
-- Do not mention the chat history explicitly in the rewritten query
+Query Types:
+- product_search: Looking for products, prices, availability, inventory
+- policy_question: Return policy, shipping info, terms, conditions
+- company_info: About us, contact, company story, general info
+- order_status: Track order, order questions
+- general_chat: Greetings, unclear queries, chitchat
+
+Routing Rules:
+- product_search → needs_mcp: true, needs_embeddings: false
+- policy_question → needs_mcp: true, needs_embeddings: false  
+- company_info → needs_mcp: false, needs_embeddings: true
+- order_status → needs_mcp: true, needs_embeddings: false
+- general_chat → needs_mcp: false, needs_embeddings: true
+
+For product searches, extract:
+- product_features: List of descriptive terms (colors, materials, attributes)
+- price_range: {min, max} if mentioned
+- category: Type of product if identifiable
+- size/color: Specific variants if mentioned
 
 Language Detection:
 - Detect the language of the user's LATEST message only
 - Use these language codes: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
 - For other languages, use the full language name in lowercase
-- If conversational (hi, thanks, bye), still detect the language
 - If language cannot be determined, use "unknown"
 
 Examples:
-- User message: "¿Cuál es tu precio?" 
-- Response: {"rewritten_prompt": "What is your pricing?", "ques_lang": "spanish"}
+- User: "Do you have blue cotton shirts under $100?"
+- Response: {
+    "rewritten_prompt": "blue cotton shirts under 100 dollars",
+    "ques_lang": "english",
+    "query_type": "product_search",
+    "needs_mcp": true,
+    "needs_embeddings": false,
+    "search_parameters": {
+        "product_features": ["blue", "cotton"],
+        "price_range": {"max": 100},
+        "category": "shirts"
+    }
+}
 
-- Previous: "Tell me about your services?" / Assistant: "We offer MBA, BBA, MTech" / User: "Wow, tell me about second one?"
-- Response: {"rewritten_prompt": "Tell me more about your BBA services", "ques_lang": "english"}
+- User: "¿Cuál es su política de devolución?"
+- Response: {
+    "rewritten_prompt": "What is your return policy",
+    "ques_lang": "spanish",
+    "query_type": "policy_question",
+    "needs_mcp": true,
+    "needs_embeddings": false,
+    "search_parameters": {}
+}
 
-- User message: "आपकी सेवाएं क्या हैं?"
-- Response: {"rewritten_prompt": "What are your services?", "ques_lang": "hindi"}
+- User: "আপনার কোম্পানি সম্পর্কে বলুন"
+- Response: {
+    "rewritten_prompt": "Tell me about your company",
+    "ques_lang": "bengali",
+    "query_type": "company_info",
+    "needs_mcp": false,
+    "needs_embeddings": true,
+    "search_parameters": {}
+}
 
 Always respond with valid JSON only.
 
@@ -214,10 +255,8 @@ Chat History:
 
 User's Latest Message:
 {latest}
-
-Sample JSON Response:
-{"rewritten_prompt": "What is your pricing?", "ques_lang": "spanish"}
 """
+
 
 SYSTEM_PROMPT_2 = """
 You cannot confirm any order, your goal is to increase the leads.
@@ -378,8 +417,8 @@ def insert_lead(lead_data):
 
 def rewrite_query_with_context_and_language(history: List[dict], latest: str) -> dict:
     """
-    Rewrite user query with chat history context and detect language
-    Returns: {"rewritten_prompt": str, "ques_lang": str}
+    Rewrite user query with chat history context, detect language, and determine routing
+    Returns: Enhanced response with routing information
     """
     try:
         chat_log = "\n".join([
@@ -390,30 +429,48 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
         prompt = REWRITER_PROMPT.format(history=chat_log, latest=latest)
 
         response = openai_client.chat.completions.create(
-            model="gpt-4.1-nano-2025-04-14",
+            model="gpt-4o-mini-2024-07-18",  # Using your existing model
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5
         )
 
         result_text = response.choices[0].message.content.strip()
         
-        # Extract JSON from response (in case of extra text)
+        # Extract JSON from response
         import re
         match = re.search(r'\{.*\}', result_text, re.DOTALL)
         if match:
             result_json = json.loads(match.group(0))
             return {
                 "rewritten_prompt": result_json.get("rewritten_prompt", latest),
-                "ques_lang": result_json.get("ques_lang", "english")
+                "ques_lang": result_json.get("ques_lang", "english"),
+                "query_type": result_json.get("query_type", "general_chat"),
+                "needs_mcp": result_json.get("needs_mcp", False),
+                "needs_embeddings": result_json.get("needs_embeddings", True),
+                "search_parameters": result_json.get("search_parameters", {})
             }
         else:
             # Fallback if JSON parsing fails
-            return {"rewritten_prompt": latest, "ques_lang": "english"}
+            return {
+                "rewritten_prompt": latest,
+                "ques_lang": "english",
+                "query_type": "general_chat",
+                "needs_mcp": False,
+                "needs_embeddings": True,
+                "search_parameters": {}
+            }
             
     except Exception as e:
-        logger.warning("Query rewrite with language detection failed: %s", str(e))
-        # Fallback to original query and default language
-        return {"rewritten_prompt": latest, "ques_lang": "english"}
+        logger.warning("Query rewrite with routing failed: %s", str(e))
+        # Fallback to original behavior
+        return {
+            "rewritten_prompt": latest,
+            "ques_lang": "english",
+            "query_type": "general_chat",
+            "needs_mcp": False,
+            "needs_embeddings": True,
+            "search_parameters": {}
+        }
 
 # JWT Token Authentication Decorator
 def require_widget_token(f):
@@ -574,11 +631,26 @@ def advanced_ask_endpoint():
             })
         
 
-        # NEW: Rewrite query with context and detect language
+        # NEW: Rewrite query with context, detect language, and determine routing
         rewrite_result = rewrite_query_with_context_and_language(recent_history, latest_user_query)
         rewritten_query = rewrite_result["rewritten_prompt"]
         detected_language = rewrite_result["ques_lang"]
+        query_type = rewrite_result.get("query_type", "general_chat")
+        needs_mcp = rewrite_result.get("needs_mcp", False)
+        needs_embeddings = rewrite_result.get("needs_embeddings", True)
+        search_parameters = rewrite_result.get("search_parameters", {})
 
+        # Check if this is a Shopify store
+        is_shopify = False
+        shopify_domain = None
+        try:
+            # Get site configuration
+            site_info = site_model.get_site(site_id)
+            if site_info and site_info.get('custom_config'):
+                is_shopify = site_info['custom_config'].get('is_shopify', False)
+                shopify_domain = site_info['custom_config'].get('shopify_domain')
+        except Exception as e:
+            logger.warning(f"Could not fetch site config for {site_id}: {e}")
         
         if mp:
             mp.track(distinct_id, "query_rewritten", {
@@ -610,10 +682,65 @@ def advanced_ask_endpoint():
                 "embedding_preview": str(embedding[:5])
             })
         
-        # Perform semantic search
-        matches = semantic_search(embedding, site_id)
-        sentry_sdk.set_extra("vector_search_results", matches[:3])
-        
+        # Initialize context holders
+        matches = []
+        mcp_context = {}
+
+        # Perform semantic search if needed
+        if needs_embeddings:
+            matches = semantic_search(embedding, site_id)
+            sentry_sdk.set_extra("vector_search_results", matches[:3])
+            
+            if mp:
+                mp.track(distinct_id, "vector_search_performed", {
+                    "site_id": site_id,
+                    "session_id": session_id,
+                    "match_count": len(matches),
+                    "top_matches": matches[:2]
+                })
+        else:
+            logger.info(f"Skipping embeddings search for query type: {query_type}")
+
+        # Perform MCP search if needed and site is Shopify
+        if is_shopify and needs_mcp and shopify_domain:
+            try:
+                # Connect to MCP
+                shopify_mcp_service.connect(shopify_domain)
+                
+                # Route to appropriate MCP function
+                if query_type == 'product_search':
+                    mcp_response = shopify_mcp_service.search_products(
+                        rewritten_query,
+                        search_parameters
+                    )
+                    mcp_context['products'] = mcp_response.get('products', [])
+                    
+                    if mp:
+                        mp.track(distinct_id, "mcp_product_search", {
+                            "site_id": site_id,
+                            "session_id": session_id,
+                            "product_count": len(mcp_context['products']),
+                            "search_params": search_parameters
+                        })
+                        
+                elif query_type == 'policy_question':
+                    mcp_response = shopify_mcp_service.get_policies()
+                    mcp_context['policies'] = mcp_response.get('policies', {})
+                    
+                    if mp:
+                        mp.track(distinct_id, "mcp_policy_fetch", {
+                            "site_id": site_id,
+                            "session_id": session_id,
+                            "policies_fetched": list(mcp_context['policies'].keys())
+                        })
+                        
+            except Exception as e:
+                logger.error(f"MCP search failed: {e}")
+                sentry_sdk.capture_exception(e)
+                # Fallback to embeddings if MCP fails
+                if not matches and needs_embeddings:
+                    matches = semantic_search(embedding, site_id)
+
         if mp:
             mp.track(distinct_id, "vector_search_performed", {
                 "site_id": site_id,
@@ -622,12 +749,41 @@ def advanced_ask_endpoint():
                 "top_matches": matches[:2]
             })
         
-        # Build context from search results
-        context = "\n\n".join(
+        
+        # Build context from search results and MCP data
+        embedding_context = "\n\n".join(
             match.get("detail") or match.get("text") or "" 
             for match in matches if match
         )
-        
+
+        # Build product context if available
+        product_context = ""
+        if mcp_context.get('products'):
+            product_lines = []
+            for product in mcp_context['products'][:5]:  # Limit to 5 products
+                product_line = f"Product: {product.get('title', 'Unknown')}"
+                if product.get('price'):
+                    product_line += f" - Price: ${product['price']}"
+                if product.get('description'):
+                    product_line += f" - {product['description'][:100]}..."
+                if product.get('inStock'):
+                    product_line += " - In Stock"
+                product_lines.append(product_line)
+            product_context = "\n\nAvailable Products:\n" + "\n".join(product_lines)
+
+        # Build policy context if available
+        policy_context = ""
+        if mcp_context.get('policies'):
+            policy_lines = []
+            for policy_type, policy_data in mcp_context['policies'].items():
+                if isinstance(policy_data, dict) and policy_data.get('body'):
+                    policy_lines.append(f"{policy_type}: {policy_data['body'][:200]}...")
+            if policy_lines:
+                policy_context = "\n\nStore Policies:\n" + "\n".join(policy_lines)
+
+        # Combine all contexts
+        context = embedding_context + product_context + policy_context
+
         # Prepare messages for OpenAI
         updated_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         
@@ -670,7 +826,14 @@ def advanced_ask_endpoint():
             language_instruction = f"\n\nIMPORTANT: The user wrote their message in {lang_name}. You MUST respond in {lang_name}. Write your entire 'content' field response in {lang_name}."
 
         # Build focused prompt with context
-        focused_prompt = f"{latest_user_query}\n\nRelevant website content:\n{context}{language_instruction}"
+        context_label = "Relevant information" if is_shopify else "Relevant website content"
+        focused_prompt = f"{latest_user_query}\n\n{context_label}:\n{context}{language_instruction}"
+
+        # Add Shopify-specific instructions if applicable
+        if is_shopify and mcp_context:
+            shopify_instructions = "\n\nYou have access to real-time product information and store policies. When showing products, include their names, prices, and availability. You can suggest products based on the search results provided."
+            focused_prompt += shopify_instructions
+
         updated_messages.append({
             "role": "user",
             "content": focused_prompt
@@ -782,15 +945,19 @@ def advanced_ask_endpoint():
         # Final tracking
         sentry_sdk.set_extra("frontend_response_payload", reply_json)
         
+
+
         if mp:
             mp.track(distinct_id, "bot_reply_sent", {
                 "session_id": session_id,
                 "site_id": site_id,
                 "content": assistant_content,
-                "lead_triggered": reply_json.get("leadTriggered", False)
+                "lead_triggered": reply_json.get("leadTriggered", False),
+                "is_shopify": is_shopify,
+                "query_type": query_type,
+                "used_mcp": needs_mcp and is_shopify,
+                "used_embeddings": needs_embeddings
             })
-        
-        logger.info(f"Chat response generated for site_id: {site_id}")
         
         return jsonify(reply_json)
         

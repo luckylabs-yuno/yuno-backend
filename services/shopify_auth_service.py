@@ -1,0 +1,66 @@
+import os
+import hmac
+import hashlib
+from supabase import create_client
+from models.site import SiteModel
+from utils.helpers import SecurityHelpers
+
+class ShopifyAuthService:
+    def __init__(self):
+        self.api_key = os.getenv('SHOPIFY_API_KEY')
+        self.api_secret = os.getenv('SHOPIFY_API_SECRET')
+        self.scopes = "read_products,write_cart,read_inventory,read_content"
+        self.redirect_uri = os.getenv('SHOPIFY_REDIRECT_URI', 'https://api.helloyuno.com/shopify/auth/callback')
+        self.site_model = SiteModel()
+        
+    def get_install_url(self, shop):
+        return (
+            f"https://{shop}/admin/oauth/authorize?"
+            f"client_id={self.api_key}&"
+            f"scope={self.scopes}&"
+            f"redirect_uri={self.redirect_uri}"
+        )
+    
+    def complete_oauth(self, shop, code):
+        # Exchange code for access token
+        import requests
+        response = requests.post(
+            f"https://{shop}/admin/oauth/access_token",
+            json={
+                "client_id": self.api_key,
+                "client_secret": self.api_secret,
+                "code": code
+            }
+        )
+        return response.json()
+    
+    def setup_yuno_site(self, shop, access_token):
+        # Create site record
+        site_id = SecurityHelpers.generate_site_id()
+        
+        # Store in database
+        from supabase import create_client
+        supabase = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+        
+        # Add to sites table
+        supabase.table('sites').insert({
+            'site_id': site_id,
+            'domain': shop,
+            'plan_type': 'shopify_starter',
+            'widget_enabled': True,
+            'custom_config': {
+                'is_shopify': True,
+                'shopify_domain': shop,
+                'access_token': access_token  # Encrypt this in production
+            }
+        }).execute()
+        
+        # Add to shopify_stores table
+        supabase.table('shopify_stores').insert({
+            'site_id': site_id,
+            'shop_domain': shop,
+            'access_token': access_token,
+            'is_active': True
+        }).execute()
+        
+        return site_id
