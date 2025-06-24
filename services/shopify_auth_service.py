@@ -10,7 +10,7 @@ class ShopifyAuthService:
     def __init__(self):
         self.api_key = os.getenv('SHOPIFY_API_KEY')
         self.api_secret = os.getenv('SHOPIFY_API_SECRET')
-        self.scopes = "read_products,write_cart,read_inventory,read_content"
+        self.scopes = "read_products,read_inventory,read_content,write_script_tags,read_script_tags"
         self.redirect_uri = os.getenv('SHOPIFY_REDIRECT_URI', 'https://api.helloyuno.com/shopify/auth/callback')
         self.site_model = SiteModel()
         
