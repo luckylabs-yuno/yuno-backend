@@ -11,7 +11,6 @@ from services.jwt_service import JWTService
 from services.domain_service import DomainService
 from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
-from models.shopify_store import ShopifyStoreModel   #added this for shopify model import
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
 from services.shopify_mcp_service import ShopifyMCPService
@@ -27,7 +26,6 @@ jwt_service = JWTService()
 domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
-shopify_model = ShopifyStoreModel()
 shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
 
 # Environment variables
