@@ -65,16 +65,16 @@ class ShopifyAuthService:
         }).execute()
 
         # 3) inject the widget script into the storefront via ScriptTag API
-         session = shopify.Session(shop, "2025-04", access_token)
-         shopify.ShopifyResource.activate_session(session)
+        session = shopify.Session(shop, "2025-04", access_token)
+        shopify.ShopifyResource.activate_session(session)
      
-         shopify.ScriptTag.create({
-             "event":         "onload",
-             "display_scope": "online_store",
-             "src":           f"https://luckylabs-yuno.github.io/luckylabs-yuno/yuno.js?site_id={site_id}"
-         })
+        shopify.ScriptTag.create({
+            "event":         "onload",
+            "display_scope": "online_store",
+            "src":           f"https://luckylabs-yuno.github.io/luckylabs-yuno/yuno.js?site_id={site_id}"
+        })
      
-         # clear the active session
-         shopify.ShopifyResource.clear_session()
+        # clear the active session
+        shopify.ShopifyResource.clear_session()
         
         return site_id
