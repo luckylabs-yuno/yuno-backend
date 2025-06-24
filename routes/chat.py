@@ -452,7 +452,7 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
         
         # Extract JSON from response
         import re
-        match = re.search(r'\{.*?\}', result_text, re.DOTALL)
+        match = re.search(r'\{.*\}', result_text, re.DOTALL)
         if match:
             result_json = json.loads(match.group(0))
             return {
