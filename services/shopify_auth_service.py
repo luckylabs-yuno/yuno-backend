@@ -4,6 +4,7 @@ import hashlib
 from supabase import create_client
 from models.site import SiteModel
 from utils.helpers import SecurityHelpers
+import shopify
 
 class ShopifyAuthService:
     def __init__(self):
@@ -62,5 +63,18 @@ class ShopifyAuthService:
             'access_token': access_token,
             'is_active': True
         }).execute()
+
+        # 3) inject the widget script into the storefront via ScriptTag API
+         session = shopify.Session(shop, "2025-04", access_token)
+         shopify.ShopifyResource.activate_session(session)
+     
+         shopify.ScriptTag.create({
+             "event":         "onload",
+             "display_scope": "online_store",
+             "src":           f"https://luckylabs-yuno.github.io/luckylabs-yuno/yuno.js?site_id={site_id}"
+         })
+     
+         # clear the active session
+         shopify.ShopifyResource.clear_session()
         
         return site_id
