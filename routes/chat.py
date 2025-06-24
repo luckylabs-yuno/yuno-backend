@@ -11,7 +11,7 @@ from services.jwt_service import JWTService
 from services.domain_service import DomainService
 from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
-from models.shopif_store import ShopifyStoreModel   #added this for shopify model import
+from models.shopify_store import ShopifyStoreModel   #added this for shopify model import
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
 from services.shopify_mcp_service import ShopifyMCPService
@@ -27,6 +27,7 @@ jwt_service = JWTService()
 domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
+shopify_model = ShopifyStoreModel()
 shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
 
 # Environment variables
@@ -660,7 +661,7 @@ def advanced_ask_endpoint():
         shopify_domain = None
         try:
             # Get site configuration
-            site_info = site_model.get_store_by_site_id(site_id)
+            site_info = shopify_model.get_store_by_site_id(site_id)
             if site_info and site_info.get('custom_config'):
                 is_shopify = site_info['custom_config'].get('is_shopify', False)
                 shopify_domain = site_info['custom_config'].get('shopify_domain')
