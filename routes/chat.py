@@ -661,7 +661,7 @@ def advanced_ask_endpoint():
         shopify_domain = None
         try:
             # Get site configuration
-            site_info = shopify_model.get_store_by_site_id(site_id)
+            site_info = site_model.get_site_by_id(site_id)
             if site_info and site_info.get('custom_config'):
                 is_shopify = site_info['custom_config'].get('is_shopify', False)
                 shopify_domain = site_info['custom_config'].get('shopify_domain')
