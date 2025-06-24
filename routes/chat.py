@@ -203,7 +203,7 @@ Routing Rules:
 
 For product searches, extract:
 - product_features: List of descriptive terms (colors, materials, attributes)
-- price_range: {min, max} if mentioned
+- price_range: {{min, max}} if mentioned
 - category: Type of product if identifiable
 - size/color: Specific variants if mentioned
 
@@ -223,7 +223,7 @@ Examples:
     "needs_embeddings": false,
     "search_parameters": {
         "product_features": ["blue", "cotton"],
-        "price_range": {"max": 100},
+        "price_range": {{"max": 100}},
         "category": "shirts"
     }
 }
@@ -235,7 +235,7 @@ Examples:
     "query_type": "policy_question",
     "needs_mcp": true,
     "needs_embeddings": false,
-    "search_parameters": {}
+    "search_parameters": {{}}
 }
 
 - User: "আপনার কোম্পানি সম্পর্কে বলুন"
@@ -245,7 +245,7 @@ Examples:
     "query_type": "company_info",
     "needs_mcp": false,
     "needs_embeddings": true,
-    "search_parameters": {}
+    "search_parameters": {{}}
 }
 
 Always respond with valid JSON only.
