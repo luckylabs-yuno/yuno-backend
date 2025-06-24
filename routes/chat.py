@@ -215,38 +215,38 @@ Language Detection:
 
 Examples:
 - User: "Do you have blue cotton shirts under $100?"
-- Response: {
+- Response: {{
     "rewritten_prompt": "blue cotton shirts under 100 dollars",
     "ques_lang": "english",
     "query_type": "product_search",
     "needs_mcp": true,
     "needs_embeddings": false,
-    "search_parameters": {
+    "search_parameters": {{
         "product_features": ["blue", "cotton"],
         "price_range": {{"max": 100}},
         "category": "shirts"
-    }
-}
+    }}
+}}
 
 - User: "¿Cuál es su política de devolución?"
-- Response: {
+- Response: {{
     "rewritten_prompt": "What is your return policy",
     "ques_lang": "spanish",
     "query_type": "policy_question",
     "needs_mcp": true,
     "needs_embeddings": false,
     "search_parameters": {{}}
-}
+}}
 
 - User: "আপনার কোম্পানি সম্পর্কে বলুন"
-- Response: {
+- Response: {{
     "rewritten_prompt": "Tell me about your company",
     "ques_lang": "bengali",
     "query_type": "company_info",
     "needs_mcp": false,
     "needs_embeddings": true,
     "search_parameters": {{}}
-}
+}}
 
 Always respond with valid JSON only.
 
@@ -438,7 +438,7 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
         
         # Extract JSON from response
         import re
-        match = re.search(r'\{.*\}', result_text, re.DOTALL)
+        match = re.search(r'\{.*?\}', result_text, re.DOTALL)
         if match:
             result_json = json.loads(match.group(0))
             return {
