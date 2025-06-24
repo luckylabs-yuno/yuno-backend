@@ -71,7 +71,7 @@ class ShopifyAuthService:
         shopify.ScriptTag.create({
             "event":         "onload",
             "display_scope": "online_store",
-            "src":           f"https://luckylabs-yuno.github.io/luckylabs-yuno/yuno.js?site_id={site_id}"
+            "src":           f"https://cdn.helloyuno.com/yuno.js?site_id={site_id}"
         })
      
         # clear the active session
