@@ -225,4 +225,4 @@ class ShopifyMCPService:
             return loop.run_until_complete(self.get_policies())
         except Exception as e:
             logger.error(f"Sync policy fetch failed: {e}")
-            return {"policies": {}, "error": str(e)}        return loop.run_until_complete(self.get_policies())
+            return {"policies": {}, "error": str(e)}
