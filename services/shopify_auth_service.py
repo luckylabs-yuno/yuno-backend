@@ -36,7 +36,7 @@ class ShopifyAuthService:
     
     def setup_yuno_site(self, shop, access_token):
         # Create site record
-        site_id = SecurityHelpers.generate_site_id()
+        site_id = SecurityHelpers.generate_site_id(shop)
         
         # Store in database
         from supabase import create_client
