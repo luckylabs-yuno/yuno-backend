@@ -825,42 +825,42 @@ def advanced_ask_endpoint():
         )
 
         product_context = ""
-                if mcp_context.get('products'):
-                    product_lines = []
-                    for i, product in enumerate(mcp_context['products'][:5]):  # Limit to 5 products
-                        product_line = f"\n{i+1}. **{product.get('title', 'Unknown Product')}**"
-                        
-                        # Price information
-                        if product.get('price'):
-                            if product.get('price_max') and product['price'] != product['price_max']:
-                                product_line += f"\n   Price: {product.get('currency', 'INR')} {product['price']} - {product['price_max']}"
-                            else:
-                                product_line += f"\n   Price: {product.get('currency', 'INR')} {product['price']}"
-                        
-                        # Description
-                        if product.get('description'):
-                            desc = product['description'][:150] + "..." if len(product['description']) > 150 else product['description']
-                            product_line += f"\n   Description: {desc}"
-                        
-                        # Availability
-                        if product.get('inStock'):
-                            product_line += "\n   ✅ In Stock"
-                        else:
-                            product_line += "\n   ❌ Out of Stock"
-                            
-                        # Tags
-                        if product.get('tags'):
-                            product_line += f"\n   Tags: {', '.join(product['tags'][:5])}"
-                            
-                        product_lines.append(product_line)
+        if mcp_context.get('products'):
+            product_lines = []
+            for i, product in enumerate(mcp_context['products'][:5]):  # Limit to 5 products
+                product_line = f"\n{i+1}. **{product.get('title', 'Unknown Product')}**"
+                
+                # Price information
+                if product.get('price'):
+                    if product.get('price_max') and product['price'] != product['price_max']:
+                        product_line += f"\n   Price: {product.get('currency', 'INR')} {product['price']} - {product['price_max']}"
+                    else:
+                        product_line += f"\n   Price: {product.get('currency', 'INR')} {product['price']}"
+                
+                # Description
+                if product.get('description'):
+                    desc = product['description'][:150] + "..." if len(product['description']) > 150 else product['description']
+                    product_line += f"\n   Description: {desc}"
+                
+                # Availability
+                if product.get('inStock'):
+                    product_line += "\n   ✅ In Stock"
+                else:
+                    product_line += "\n   ❌ Out of Stock"
                     
-                    product_context = "\n\n**Available Products:**" + "\n".join(product_lines)
+                # Tags
+                if product.get('tags'):
+                    product_line += f"\n   Tags: {', '.join(product['tags'][:5])}"
                     
-                    # Add pagination note if more products available
-                    if mcp_context.get('pagination', {}).get('hasNextPage'):
-                        product_context += "\n\n*More products available. Ask to see more if interested.*"
-                    
-                    logger.debug(f"Product context built with {len(mcp_context['products'])} products")
+                product_lines.append(product_line)
+            
+            product_context = "\n\n**Available Products:**" + "\n".join(product_lines)
+            
+            # Add pagination note if more products available
+            if mcp_context.get('pagination', {}).get('hasNextPage'):
+                product_context += "\n\n*More products available. Ask to see more if interested.*"
+            
+            logger.debug(f"Product context built with {len(mcp_context['products'])} products")
 
 
         # Build policy context if available
