@@ -1,228 +1,138 @@
-# shopify_mcp_service.py - CORRECT IMPLEMENTATION
+# shopify_mcp_service.py - SIMPLIFIED VERSION
 
-import httpx
+import requests
 import json
 import logging
 from typing import Dict, List, Optional
-import asyncio
 
 logger = logging.getLogger(__name__)
 
 class ShopifyMCPService:
     def __init__(self):
-        self.mcp_client = None
+        self.shop_domain = None
+        self.mcp_url = None
         
-    async def connect(self, shop_domain: str) -> None:
-        """Connect to Shopify store's MCP server"""
-        # CORRECT URL - just /api/mcp without any authentication
-        mcp_url = f"https://{shop_domain}/api/mcp"
-        
-        # No authentication headers needed for MCP!
-        self.mcp_client = httpx.AsyncClient(
-            base_url=mcp_url,
-            headers={"Content-Type": "application/json"},
-            timeout=30.0
-        )
-        
-        logger.info(f"MCP client initialized for {shop_domain}")
+    def connect_sync(self, shop_domain: str) -> None:
+        """Initialize MCP connection - just sets the URL"""
+        self.shop_domain = shop_domain
+        self.mcp_url = f"https://{shop_domain}/api/mcp"
+        logger.info(f"MCP URL set to: {self.mcp_url}")
     
-    async def search_products(
-        self, 
-        query: str, 
-        filters: Optional[Dict] = None,
-        context: str = ""
-    ) -> Dict:
-        """Search products using Shopify MCP with JSON-RPC"""
+    def _call_mcp_tool(self, tool_name: str, arguments: Dict) -> Dict:
+        """Generic method to call any MCP tool"""
+        if not self.mcp_url:
+            raise ValueError("MCP not connected. Call connect_sync first.")
         
         # Build JSON-RPC request
-        request = {
+        request_body = {
             "jsonrpc": "2.0",
             "method": "tools/call",
             "id": 1,
             "params": {
-                "name": "search_shop_catalog",
-                "arguments": {
-                    "query": query,
-                    "context": context or f"Searching for {query}"
-                }
+                "name": tool_name,
+                "arguments": arguments
             }
+        }
+        
+        try:
+            logger.debug(f"Calling MCP tool '{tool_name}' with: {json.dumps(arguments, indent=2)}")
+            
+            # Simple POST request - no special auth needed!
+            response = requests.post(
+                self.mcp_url,
+                json=request_body,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            
+            logger.debug(f"MCP Response Status: {response.status_code}")
+            
+            if response.status_code != 200:
+                logger.error(f"MCP HTTP error: {response.status_code} - {response.text}")
+                return {"error": f"HTTP {response.status_code}", "products": []}
+            
+            # Parse JSON-RPC response
+            data = response.json()
+            
+            if "error" in data:
+                logger.error(f"MCP error: {data['error']}")
+                return {"error": data["error"], "products": []}
+            
+            # Extract the actual content from the response
+            if "result" in data and "content" in data["result"]:
+                for content_item in data["result"]["content"]:
+                    if content_item["type"] == "text":
+                        # Parse the nested JSON
+                        return json.loads(content_item["text"])
+            
+            return {"error": "Unexpected response format", "products": []}
+            
+        except requests.exceptions.Timeout:
+            logger.error("MCP request timed out")
+            return {"error": "Request timed out", "products": []}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"MCP request failed: {e}")
+            return {"error": str(e), "products": []}
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse MCP response: {e}")
+            return {"error": "Invalid JSON response", "products": []}
+        except Exception as e:
+            logger.error(f"Unexpected MCP error: {type(e).__name__}: {e}")
+            return {"error": str(e), "products": []}
+    
+    def search_products_sync(self, query: str, filters: Optional[Dict] = None, context: str = "") -> Dict:
+        """Search products using MCP"""
+        arguments = {
+            "query": query,
+            "context": context or f"Customer searching for: {query}"
         }
         
         # Add filters if provided
         if filters:
-            if filters.get('price_range'):
-                # Add price filters to arguments
-                if 'max' in filters['price_range']:
-                    request["params"]["arguments"]["price_max"] = filters['price_range']['max']
-                if 'min' in filters['price_range']:
-                    request["params"]["arguments"]["price_min"] = filters['price_range']['min']
-            
+            if filters.get('price_range') and 'max' in filters['price_range']:
+                arguments["price_max"] = filters['price_range']['max']
             if filters.get('available'):
-                request["params"]["arguments"]["available"] = filters['available']
-                
-        try:
-            logger.debug(f"Sending MCP request: {json.dumps(request, indent=2)}")
-            
-            response = await self.mcp_client.post("", json=request)
-            
-            logger.debug(f"MCP Response status: {response.status_code}")
-            logger.debug(f"MCP Response headers: {dict(response.headers)}")
-            
-            if response.status_code != 200:
-                logger.error(f"MCP error: {response.text}")
-                return {"products": [], "error": f"HTTP {response.status_code}"}
-            
-            # Parse JSON-RPC response
-            data = response.json()
-            logger.debug(f"MCP Response: {json.dumps(data, indent=2)[:500]}...")
-            
-            if "error" in data:
-                logger.error(f"JSON-RPC error: {data['error']}")
-                return {"products": [], "error": data["error"]}
-            
-            # Extract products from the result
-            products = []
-            if "result" in data and "content" in data["result"]:
-                # The content is an array with a text item containing JSON
-                for content_item in data["result"]["content"]:
-                    if content_item["type"] == "text":
-                        # Parse the nested JSON string
-                        product_data = json.loads(content_item["text"])
-                        
-                        # Extract products
-                        if "products" in product_data:
-                            for product in product_data["products"]:
-                                products.append({
-                                    "id": product["product_id"],
-                                    "title": product["title"],
-                                    "description": product["description"],
-                                    "price": float(product["price_range"]["min"]),
-                                    "price_max": float(product["price_range"]["max"]),
-                                    "currency": product["price_range"]["currency"],
-                                    "inStock": any(v["available"] for v in product.get("variants", [])),
-                                    "image": product["image_url"],
-                                    "image_alt": product["image_alt_text"],
-                                    "product_type": product["product_type"],
-                                    "tags": product["tags"],
-                                    "variants": product.get("variants", [])
-                                })
-                        
-                        # Store pagination info if needed
-                        self.pagination = product_data.get("pagination", {})
-                        self.available_filters = product_data.get("available_filters", [])
-            
-            logger.info(f"Found {len(products)} products via MCP")
-            return {
-                "products": products,
-                "pagination": getattr(self, 'pagination', {}),
-                "filters": getattr(self, 'available_filters', [])
-            }
-            
-        except httpx.ReadTimeout:
-            logger.error("MCP request timed out")
-            return {"products": [], "error": "Request timed out"}
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {e}")
-            if 'response' in locals():
-                logger.error(f"Raw response: {response.text[:500]}")
-            return {"products": [], "error": "Invalid JSON response"}
-        except Exception as e:
-            logger.error(f"MCP search error: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return {"products": [], "error": str(e)}
+                arguments["available"] = filters['available']
+        
+        result = self._call_mcp_tool("search_shop_catalog", arguments)
+        
+        # Transform products to our format
+        products = []
+        if "products" in result:
+            for product in result["products"]:
+                products.append({
+                    "id": product.get("product_id", ""),
+                    "title": product.get("title", "Unknown"),
+                    "description": product.get("description", ""),
+                    "price": float(product["price_range"]["min"]) if "price_range" in product else 0,
+                    "price_max": float(product["price_range"]["max"]) if "price_range" in product else 0,
+                    "currency": product.get("price_range", {}).get("currency", "INR"),
+                    "inStock": any(v.get("available", False) for v in product.get("variants", [])),
+                    "image": product.get("image_url", ""),
+                    "tags": product.get("tags", []),
+                    "product_type": product.get("product_type", "")
+                })
+        
+        return {
+            "products": products,
+            "pagination": result.get("pagination", {}),
+            "filters": result.get("available_filters", []),
+            "error": result.get("error")
+        }
     
-    async def get_product_details(self, product_id: str) -> Dict:
+    def get_product_details_sync(self, product_id: str) -> Dict:
         """Get detailed product information"""
-        request = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "id": 2,
-            "params": {
-                "name": "get_product_details",
-                "arguments": {
-                    "id": product_id
-                }
-            }
-        }
-        
-        try:
-            response = await self.mcp_client.post("", json=request)
-            data = response.json()
-            
-            if "error" in data:
-                return {"error": data["error"]}
-                
-            # Parse product details from response
-            if "result" in data and "content" in data["result"]:
-                for content_item in data["result"]["content"]:
-                    if content_item["type"] == "text":
-                        return json.loads(content_item["text"])
-            
-            return {"error": "No product details found"}
-            
-        except Exception as e:
-            logger.error(f"Get product details error: {e}")
-            return {"error": str(e)}
+        result = self._call_mcp_tool("get_product_details", {"id": product_id})
+        return result
     
-    async def get_policies(self) -> Dict:
-        """Get store policies via MCP"""
-        # Note: Based on the MCP docs, there might be a specific tool for this
-        # For now, we can search for policy-related content
-        request = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "id": 3,
-            "params": {
-                "name": "search_shop_catalog",
-                "arguments": {
-                    "query": "policy shipping return refund",
-                    "context": "Customer asking about store policies"
-                }
-            }
-        }
-        
-        try:
-            response = await self.mcp_client.post("", json=request)
-            data = response.json()
-            
-            # For now, return empty policies
-            # You might need to implement a specific MCP tool for policies
-            return {"policies": {}}
-            
-        except Exception as e:
-            logger.error(f"Policy fetch error: {e}")
-            return {"policies": {}, "error": str(e)}
-
-    # Sync wrapper methods
-    def connect_sync(self, shop_domain: str) -> None:
-        """Sync version of connect - NO ACCESS TOKEN NEEDED!"""
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.connect(shop_domain))
-            logger.info(f"Successfully connected to MCP for {shop_domain}")
-        except Exception as e:
-            logger.error(f"Failed to connect to MCP: {e}")
-            raise
-
-    def search_products_sync(self, query: str, filters: Optional[Dict] = None) -> Dict:
-        """Sync version of search_products"""
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self.search_products(query, filters))
-            return result
-        except Exception as e:
-            logger.error(f"Sync product search failed: {e}")
-            return {"products": [], "error": str(e)}
-
+    def update_cart_sync(self, items: List[Dict]) -> Dict:
+        """Update cart with items"""
+        # Example: [{"product_id": "gid://shopify/Product/123", "quantity": 2}]
+        result = self._call_mcp_tool("update_cart", {"items": items})
+        return result
+    
     def get_policies_sync(self) -> Dict:
-        """Sync version of get_policies"""
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self.get_policies())
-        except Exception as e:
-            logger.error(f"Sync policy fetch failed: {e}")
-            return {"policies": {}, "error": str(e)}
+        """Try to get store policies - might need a different approach"""
+        # Note: The shop-chat-agent repo suggests policies might be available
+        # through search or a specific tool. For now, return empty.
+        return {"policies": {}}
