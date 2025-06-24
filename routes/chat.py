@@ -13,7 +13,7 @@ from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
-from services.shopify_mcp_service import ShopifyMCPService
+from services.shopify_mcp_service import ShopifyMCPClient
 
 # Import OpenAI v1.0+ style
 from openai import OpenAI
@@ -26,7 +26,7 @@ jwt_service = JWTService()
 domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
-shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
+shopify_mcp_service = ShopifyMCPClient()  # ADD THIS LINE
 
 # Environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
