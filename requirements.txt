@@ -17,3 +17,4 @@ resend==0.6.0
 PyPDF2==3.0.1
 python-docx==0.8.11
 beautifulsoup4==4.12.2
+ShopifyAPI>=10.0.0
