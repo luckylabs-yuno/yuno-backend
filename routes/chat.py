@@ -10,7 +10,7 @@ from typing import List
 from services.jwt_service import JWTService
 from services.domain_service import DomainService
 from services.rate_limit_service import RateLimitService
-from models.site import SiteModel
+from models.site import ShopifyStoreModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
 from services.shopify_mcp_service import ShopifyMCPService
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 jwt_service = JWTService()
 domain_service = DomainService()
 rate_limit_service = RateLimitService()
-site_model = SiteModel()
+site_model = ShopifyStoreModel()
 shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
 
 # Environment variables
