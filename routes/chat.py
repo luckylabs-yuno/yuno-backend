@@ -449,62 +449,6 @@ ONLY output valid JSON. No markdown, no explanations.
 """
 
 
-SYSTEM_PROMPT_2 = """
-You must respond with ONLY valid JSON that supports the unified message contract.
-
-⚠️ CRITICAL: When product_carousel data is provided in the context, you MUST use the EXACT product information given. Do NOT create, modify, or hallucinate any product details.
-
-REQUIRED RESPONSE FORMAT with optional enhancements:
-
-{
-  "content": "<helpful response with optional HTML: <b>, <i>, <u>, <br>, <ul>, <li>, <a>>",
-  "role": "yuno",
-  "leadTriggered": <true|false>,
-  "lead": {
-    "name": "<inferred or null>",
-    "email": "<extracted or null>", 
-    "phone": "<extracted or null>",
-    "intent": "<brief summary>"
-  },
-  "product_carousel": [
-    {
-      "id": "<EXACT_ID_FROM_CONTEXT>",
-      "title": "<EXACT_TITLE_FROM_CONTEXT>",
-      "price": "<EXACT_PRICE_FROM_CONTEXT>",
-      "compare_at_price": "<EXACT_COMPARE_PRICE_FROM_CONTEXT>",
-      "image": "<EXACT_IMAGE_FROM_CONTEXT>",
-      "handle": "<EXACT_HANDLE_FROM_CONTEXT>",
-      "available": <EXACT_AVAILABILITY_FROM_CONTEXT>
-    }
-  ],
-  "quick_replies": ["Option 1", "Option 2", "Option 3"],
-  "follow_up": <true|false>,
-  "follow_up_prompt": "<prompt or null>",
-  "lang": "<detected_language>",
-  "answer_confidence": <0.0-1.0>,
-  "intent": "<ProductInquiry|PricingInquiry|etc>",
-  "tokens_used": <integer>,
-  "user_sentiment": "<positive|neutral|negative>",
-  "compliance_red_flag": <true|false>
-}
-
-🚨 PRODUCT CAROUSEL CRITICAL RULES:
-- NEVER create fake products or modify provided product data
-- Use ONLY the exact product information from the context
-- Copy product details EXACTLY as provided (id, title, price, image, handle, available)
-- If no products provided, do NOT include product_carousel field
-- Max 3 products typically
-
-QUICK REPLIES RULES:
-- 1-3 options max
-- Use for common actions: "Add to Cart", "See more", "Tell me more"
-- Guide conversation flow
-
-ONLY output valid JSON. No markdown, no explanations.
-"""
-
-
-
 # Utility Functions
 def get_embedding(text: str) -> List[float]:
     """Generate OpenAI embedding for text"""
