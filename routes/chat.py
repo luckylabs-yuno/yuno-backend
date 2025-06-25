@@ -178,100 +178,6 @@ IMPORTANT
 * Respond with **exactly one** JSON object.
 """
 
-REWRITER_PROMPT = """
-You are a JSON-only rewrite service.  Do NOT output any prose or markdown—*only* emit a single top-level JSON object.
-
-You are an assistant that rewrites a user's query using recent chat history, detects the language, and determines routing needs.
-
-Your goals:
-1. Combine the current user message and past conversation into a clear, standalone query in ENGLISH
-2. Detect the original language of the user's latest message  
-3. Classify the query type and determine data source routing
-4. Extract search parameters for product queries
-5. Return a JSON response with all information
-
-Query Types:
-- product_search: Looking for products, prices, availability, inventory
-- policy_question: Return policy, shipping info, terms, conditions
-- company_info: About us, contact, company story, general info
-- order_status: Track order, order questions
-- general_chat: Greetings, unclear queries, chitchat
-
-Routing Rules:
-- product_search → needs_mcp: true, needs_embeddings: false
-- policy_question → needs_mcp: true, needs_embeddings: false  
-- company_info → needs_mcp: false, needs_embeddings: true
-- order_status → needs_mcp: true, needs_embeddings: false
-- general_chat → needs_mcp: false, needs_embeddings: true
-
-For product searches, extract:
-- product_features: List of descriptive terms (colors, materials, attributes)
-- price_range: {{min, max}} if mentioned
-- category: Type of product if identifiable
-- size/color: Specific variants if mentioned
-
-Language Detection:
-- Detect the language of the user's LATEST message only
-- Use these language codes: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
-- For other languages, use the full language name in lowercase
-- If language cannot be determined, use "unknown"
-
-Examples:
-- User: "Do you have blue cotton shirts under $100?"
-- Response: 
-
-**Output schema (strict JSON)** 
-
-{{
-    "rewritten_prompt": "blue cotton shirts under 100 dollars",
-    "ques_lang": "english",
-    "query_type": "product_search",
-    "needs_mcp": true,
-    "needs_embeddings": false,
-    "search_parameters": {{
-        "product_features": ["blue", "cotton"],
-        "price_range": {{"max": 100}},
-        "category": "shirts"
-    }}
-}}
-
-- User: "¿Cuál es su política de devolución?"
-- Response: 
-
-**Output schema (strict JSON)** 
-
-{{
-    "rewritten_prompt": "What is your return policy",
-    "ques_lang": "spanish",
-    "query_type": "policy_question",
-    "needs_mcp": true,
-    "needs_embeddings": false,
-    "search_parameters": {{}}
-}}
-
-- User: "আপনার কোম্পানি সম্পর্কে বলুন"
-- Response: 
-
-**Output schema (strict JSON)** 
-
-{{
-    "rewritten_prompt": "Tell me about your company",
-    "ques_lang": "bengali",
-    "query_type": "company_info",
-    "needs_mcp": false,
-    "needs_embeddings": true,
-    "search_parameters": {{}}
-}}
-
-Always respond with valid JSON only.
-
-Chat History:
-{history}
-
-User's Latest Message:
-{latest}
-"""
-
 
 SYSTEM_PROMPT_2 = """
 You cannot confirm any order, your goal is to increase the leads.
@@ -430,56 +336,200 @@ def insert_lead(lead_data):
         logger.error(f"Error inserting lead: {str(e)}")
 
 
-# ENHANCE the existing rewrite_query_with_context_and_language function
 def rewrite_query_with_context_and_language(history: List[dict], latest: str) -> dict:
-    """Enhanced version with better Shopify detection"""
+    """
+    Enhanced query rewriter with better intent detection
+    """
     try:
         chat_log = "\n".join([
             f"{'You' if m['role'] in ['assistant', 'yuno', 'bot'] else 'User'}: {m['content']}"
             for m in history
         ])
 
+        # FIXED PROMPT with better examples and clearer instructions
+        enhanced_prompt = f"""
+        You are a JSON-only query analysis service. Analyze the user's query and determine intent, language, and data routing needs.
+
+        CRITICAL RULES:
+        1. Focus on the ACTUAL user intent, not assumed context
+        2. Product questions = product_search (even if asking "do you have", "show me", "what are")
+        3. Only classify as order_status if explicitly asking about existing orders or tracking
+        4. Rewrite queries to be clearer but keep the original intent
+
+        Query Types & Examples:
+
+        **product_search** (USE THIS FOR):
+        - "Do you have trimmers under 2000?" → product_search
+        - "Show me beard trimmers" → product_search  
+        - "What trimmers are available?" → product_search
+        - "Any good trimmers for sale?" → product_search
+        - "I need a trimmer" → product_search
+        - "trimmer prices" → product_search
+
+        **policy_question** (USE THIS FOR):
+        - "What is your return policy?" → policy_question
+        - "Shipping information" → policy_question
+        - "Do you offer warranty?" → policy_question
+
+        **order_status** (ONLY USE FOR):
+        - "Where is my order?" → order_status
+        - "Track my order #123" → order_status  
+        - "Order delivery status" → order_status
+        - "When will my order arrive?" → order_status
+
+        **company_info** (USE THIS FOR):
+        - "About your company" → company_info
+        - "Contact information" → company_info
+        - "Who are you?" → company_info
+
+        **general_chat** (USE THIS FOR):
+        - "Hi", "Hello", "Thanks" → general_chat
+        - Unclear or ambiguous queries → general_chat
+
+        ROUTING RULES:
+        - product_search → needs_mcp: true, needs_embeddings: false
+        - policy_question → needs_mcp: true, needs_embeddings: false  
+        - order_status → needs_mcp: true, needs_embeddings: false
+        - company_info → needs_mcp: false, needs_embeddings: true
+        - general_chat → needs_mcp: false, needs_embeddings: true
+
+        For product_search, extract these parameters:
+        - product_features: ["trimmer", "beard", "electric"] 
+        - price_range: {{"max": 2000}} if mentioned
+        - category: "trimmer" if identifiable
+
+        Language Detection:
+        Detect the user's LATEST message language: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
+
+        Chat History:
+        {chat_log}
+
+        User's Latest Message:
+        {latest}
+
+        ANALYZE THE QUERY CAREFULLY. Respond with valid JSON only:
+
+        {{
+            "rewritten_prompt": "clear English version of user query",
+            "ques_lang": "detected_language", 
+            "query_type": "one_of_five_types",
+            "needs_mcp": true_or_false,
+            "needs_embeddings": true_or_false,
+            "search_parameters": {{
+                "product_features": ["feature1", "feature2"],
+                "price_range": {{"max": 2000}},
+                "category": "product_category"
+            }}
+        }}
+        """
+
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini-2024-07-18",
-            messages=[{"role": "user", "content": REWRITER_PROMPT}],
-            temperature=0.3
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "You are a precise query classifier. Focus on the user's actual intent, not assumed context. Product questions should always be classified as product_search."
+                },
+                {
+                    "role": "user", 
+                    "content": enhanced_prompt
+                }
+            ],
+            temperature=0.1  # Lower temperature for more consistent classification
         )
 
         result_text = response.choices[0].message.content.strip()
-
+        
         # Extract JSON
         match = re.search(r'\{.*\}', result_text, re.DOTALL)
         if match:
-            result_json = json.loads(match.group(0))
-            return {
-                "rewritten_prompt": result_json.get("rewritten_prompt", latest),
-                "ques_lang": result_json.get("ques_lang", "english"),
-                "query_type": result_json.get("query_type", "general_chat"),
-                "needs_mcp": result_json.get("needs_mcp", False),
-                "needs_embeddings": result_json.get("needs_embeddings", True),
-                "search_parameters": result_json.get("search_parameters", {})
-            }
+            try:
+                result_json = json.loads(match.group(0))
+                
+                # Log the classification for debugging
+                logger.info(f"🔍 Query Classification:")
+                logger.info(f"🔍   Original: '{latest}'")
+                logger.info(f"🔍   Rewritten: '{result_json.get('rewritten_prompt', latest)}'")
+                logger.info(f"🔍   Type: {result_json.get('query_type', 'unknown')}")
+                logger.info(f"🔍   Language: {result_json.get('ques_lang', 'unknown')}")
+                logger.info(f"🔍   Needs MCP: {result_json.get('needs_mcp', False)}")
+                
+                return {
+                    "rewritten_prompt": result_json.get("rewritten_prompt", latest),
+                    "ques_lang": result_json.get("ques_lang", "english"),
+                    "query_type": result_json.get("query_type", "general_chat"),
+                    "needs_mcp": result_json.get("needs_mcp", False),
+                    "needs_embeddings": result_json.get("needs_embeddings", True),
+                    "search_parameters": result_json.get("search_parameters", {})
+                }
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse rewriter JSON: {e}")
+                logger.error(f"Raw response: {result_text}")
+                # Fallback with manual classification
+                return classify_query_manually(latest)
         else:
-            # Fallback
-            return {
-                "rewritten_prompt": latest,
-                "ques_lang": "english",
-                "query_type": "general_chat", 
-                "needs_mcp": False,
-                "needs_embeddings": True,
-                "search_parameters": {}
-            }
-
+            logger.error("No JSON found in rewriter response")
+            return classify_query_manually(latest)
+            
     except Exception as e:
         logger.warning("Enhanced query rewrite failed: %s", str(e))
-        return {
-            "rewritten_prompt": latest,
-            "ques_lang": "english",
-            "query_type": "general_chat",
-            "needs_mcp": False,
-            "needs_embeddings": True,
-            "search_parameters": {}
-        }
+        return classify_query_manually(latest)
+
+def classify_query_manually(query: str) -> dict:
+    """Manual fallback classification for when AI fails"""
+    query_lower = query.lower()
+    
+    # Simple keyword-based classification
+    if any(word in query_lower for word in ['trimmer', 'product', 'buy', 'price', 'cost', 'have', 'sell', 'available']):
+        query_type = "product_search"
+        needs_mcp = True
+        needs_embeddings = False
+        
+        # Extract price if mentioned
+        search_params = {}
+        price_match = re.search(r'under\s+(\d+)', query_lower)
+        if price_match:
+            search_params["price_range"] = {"max": int(price_match.group(1))}
+        
+        # Extract product features
+        features = []
+        if 'trimmer' in query_lower:
+            features.append('trimmer')
+        if 'beard' in query_lower:
+            features.append('beard')
+        
+        if features:
+            search_params["product_features"] = features
+            search_params["category"] = features[0]  # Use first feature as category
+        
+    elif any(word in query_lower for word in ['order', 'track', 'delivery', 'shipped']):
+        query_type = "order_status"
+        needs_mcp = True
+        needs_embeddings = False
+        search_params = {}
+        
+    elif any(word in query_lower for word in ['policy', 'return', 'shipping', 'warranty']):
+        query_type = "policy_question"
+        needs_mcp = True
+        needs_embeddings = False
+        search_params = {}
+        
+    else:
+        query_type = "general_chat"
+        needs_mcp = False
+        needs_embeddings = True
+        search_params = {}
+    
+    logger.info(f"🔍 Manual Classification: '{query}' → {query_type}")
+    
+    return {
+        "rewritten_prompt": query,  # Keep original
+        "ques_lang": "english",
+        "query_type": query_type,
+        "needs_mcp": needs_mcp,
+        "needs_embeddings": needs_embeddings,
+        "search_parameters": search_params
+    }
 
 # JWT Token Authentication Decorator
 def require_widget_token(f):
