@@ -14,6 +14,7 @@ from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
 from services.shopify_mcp_service import ShopifyMCPService
+from urllib.parse import urlparse
 
 # Import OpenAI v1.0+ style
 from openai import OpenAI
@@ -429,29 +430,24 @@ def insert_lead(lead_data):
         logger.error(f"Error inserting lead: {str(e)}")
 
 
+# ENHANCE the existing rewrite_query_with_context_and_language function
 def rewrite_query_with_context_and_language(history: List[dict], latest: str) -> dict:
-    """
-    Rewrite user query with chat history context, detect language, and determine routing
-    Returns: Enhanced response with routing information
-    """
+    """Enhanced version with better Shopify detection"""
     try:
         chat_log = "\n".join([
             f"{'You' if m['role'] in ['assistant', 'yuno', 'bot'] else 'User'}: {m['content']}"
             for m in history
         ])
 
-        prompt = REWRITER_PROMPT.format(history=chat_log, latest=latest)
-
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini-2024-07-18",  # Using your existing model
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5
+            model="gpt-4o-mini-2024-07-18",
+            messages=[{"role": "user", "content": REWRITER_PROMPT}],
+            temperature=0.3
         )
 
         result_text = response.choices[0].message.content.strip()
-        
-        # Extract JSON from response
-        import re
+
+        # Extract JSON
         match = re.search(r'\{.*\}', result_text, re.DOTALL)
         if match:
             result_json = json.loads(match.group(0))
@@ -464,19 +460,18 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
                 "search_parameters": result_json.get("search_parameters", {})
             }
         else:
-            # Fallback if JSON parsing fails
+            # Fallback
             return {
                 "rewritten_prompt": latest,
                 "ques_lang": "english",
-                "query_type": "general_chat",
+                "query_type": "general_chat", 
                 "needs_mcp": False,
                 "needs_embeddings": True,
                 "search_parameters": {}
             }
-            
+
     except Exception as e:
-        logger.warning("Query rewrite with routing failed: %s", str(e))
-        # Fallback to original behavior
+        logger.warning("Enhanced query rewrite failed: %s", str(e))
         return {
             "rewritten_prompt": latest,
             "ques_lang": "english",
@@ -716,26 +711,280 @@ def advanced_ask_endpoint():
             logger.info(f"Skipping embeddings search for query type: {query_type}")
 
 
-# Perform MCP search if needed and site is Shopify
+
+        # ===== ENHANCED MCP INTEGRATION WITH DETAILED LOGGING =====
+        if is_shopify and needs_mcp and shopify_domain:
+            logger.info("🛍️ ===== SHOPIFY MCP INTEGRATION START =====")
+            logger.info(f"🛍️ Shopify store detected: {shopify_domain}")
+            logger.info(f"🛍️ Query type: {query_type}")
+            logger.info(f"🛍️ Original user query: '{latest_user_query}'")
+            logger.info(f"🛍️ Rewritten query: '{rewritten_query}'")
+            logger.info(f"🛍️ Search parameters: {json.dumps(search_parameters, indent=2)}")
+            logger.info(f"🛍️ Needs embeddings: {needs_embeddings}")
+            logger.info(f"🛍️ User language: {detected_language}")
+            
+            try:
+                logger.info(f"🛍️ Attempting MCP connection...")
+                
+                # Ensure domain format is correct for MCP
+                mcp_domain = shopify_domain
+                original_domain = mcp_domain
+                
+                # Log domain processing
+                logger.info(f"🛍️ Original domain from config: '{original_domain}'")
+                
+                # DON'T convert to .myshopify.com - use as-is for custom domains
+                logger.info(f"🛍️ Using domain as-is for MCP: '{mcp_domain}'")
+                logger.info(f"🛍️ Expected MCP URL: https://{mcp_domain}/api/mcp")
+                
+                # Connect to MCP
+                logger.info(f"🛍️ Connecting to MCP server...")
+                shopify_mcp_service.connect_sync(mcp_domain)
+                logger.info(f"🛍️ MCP connection established")
+                
+                if query_type == 'product_search':
+                    logger.info(f"🛍️ ===== PRODUCT SEARCH FLOW =====")
+                    logger.info(f"🛍️ Processing product search request...")
+                    logger.info(f"🛍️ Search query: '{rewritten_query}'")
+                    
+                    # Build context from search parameters with detailed logging
+                    context_parts = []
+                    logger.info(f"🛍️ Building search context...")
+                    
+                    if search_parameters.get('product_features'):
+                        features = search_parameters['product_features']
+                        context_part = f"Looking for {', '.join(features)}"
+                        context_parts.append(context_part)
+                        logger.info(f"🛍️ Added features to context: {features}")
+                    
+                    if search_parameters.get('price_range', {}).get('max'):
+                        max_price = search_parameters['price_range']['max']
+                        context_part = f"Budget up to {max_price}"
+                        context_parts.append(context_part)
+                        logger.info(f"🛍️ Added price limit to context: {max_price}")
+                    
+                    if search_parameters.get('category'):
+                        category = search_parameters['category']
+                        context_parts.append(f"Category: {category}")
+                        logger.info(f"🛍️ Added category to context: {category}")
+                    
+                    context = ". ".join(context_parts) if context_parts else ""
+                    logger.info(f"🛍️ Final search context: '{context}'")
+                    
+                    # Log the MCP call parameters
+                    logger.info(f"🛍️ Calling MCP search_products_sync with:")
+                    logger.info(f"🛍️   - query: '{rewritten_query}'")
+                    logger.info(f"🛍️   - search_parameters: {search_parameters}")
+                    logger.info(f"🛍️   - context: '{context}'")
+                    
+                    # Make the MCP call
+                    logger.info(f"🛍️ Making MCP product search call...")
+                    mcp_response = shopify_mcp_service.search_products_sync(
+                        rewritten_query,
+                        search_parameters,
+                        context=context
+                    )
+                    logger.info(f"🛍️ MCP product search call completed")
+                    
+                    # Log the response in detail
+                    logger.info(f"🛍️ MCP Response Analysis:")
+                    logger.info(f"🛍️   - Has error: {mcp_response.get('error') is not None}")
+                    logger.info(f"🛍️   - Error: {mcp_response.get('error')}")
+                    logger.info(f"🛍️   - Products count: {len(mcp_response.get('products', []))}")
+                    logger.info(f"🛍️   - Has pagination: {bool(mcp_response.get('pagination'))}")
+                    logger.info(f"🛍️   - Has filters: {bool(mcp_response.get('filters'))}")
+                    
+                    # Log first few products for debugging
+                    products = mcp_response.get('products', [])
+                    if products:
+                        logger.info(f"🛍️ First {min(3, len(products))} products:")
+                        for i, product in enumerate(products[:3]):
+                            title = product.get('title', 'No title')
+                            price = product.get('price', 'No price')
+                            currency = product.get('currency', '')
+                            in_stock = product.get('inStock', 'Unknown')
+                            logger.info(f"🛍️   {i+1}. '{title}' - {currency} {price} (Stock: {in_stock})")
+                    
+                    if mcp_response.get('error'):
+                        logger.warning(f"🛍️ MCP product search failed: {mcp_response['error']}")
+                        logger.info(f"🛍️ Falling back to embeddings search...")
+                        
+                        # Fallback to embeddings if MCP fails
+                        if not matches:
+                            logger.info(f"🛍️ No embeddings matches available, performing semantic search...")
+                            matches = semantic_search(embedding, site_id)
+                            logger.info(f"🛍️ Semantic search returned {len(matches)} matches")
+                    else:
+                        # Success! Store the MCP data
+                        mcp_context['products'] = mcp_response.get('products', [])
+                        mcp_context['pagination'] = mcp_response.get('pagination', {})
+                        mcp_context['filters'] = mcp_response.get('filters', [])
+                        
+                        logger.info(f"🛍️ ✅ MCP product search successful!")
+                        logger.info(f"🛍️ Stored {len(mcp_context['products'])} products in context")
+                        
+                        # Log pagination info
+                        pagination = mcp_context.get('pagination', {})
+                        if pagination:
+                            current_page = pagination.get('currentPage', 1)
+                            max_pages = pagination.get('maxPages', 'unknown')
+                            has_next = pagination.get('hasNextPage', False)
+                            logger.info(f"🛍️ Pagination: page {current_page} of {max_pages}, has_next: {has_next}")
+                        
+                        # Log filter info
+                        filters = mcp_context.get('filters', [])
+                        if filters:
+                            logger.info(f"🛍️ Available filters: {len(filters)}")
+                            for filter_item in filters:
+                                filter_label = filter_item.get('label', 'Unknown')
+                                logger.info(f"🛍️   - {filter_label}")
+                    
+                    # Track analytics
+                    if mp:
+                        mp.track(distinct_id, "mcp_product_search_detailed", {
+                            "site_id": site_id,
+                            "session_id": session_id,
+                            "shopify_domain": mcp_domain,
+                            "original_query": latest_user_query,
+                            "rewritten_query": rewritten_query,
+                            "search_parameters": search_parameters,
+                            "context_used": context,
+                            "product_count": len(mcp_context.get('products', [])),
+                            "has_pagination": bool(mcp_context.get('pagination')),
+                            "has_filters": bool(mcp_context.get('filters')),
+                            "error": mcp_response.get('error'),
+                            "query_type": query_type,
+                            "detected_language": detected_language
+                        })
+                        
+                elif query_type == 'policy_question':
+                    logger.info(f"🛍️ ===== POLICY SEARCH FLOW =====")
+                    logger.info(f"🛍️ Processing policy question...")
+                    logger.info(f"🛍️ Policy query: '{rewritten_query}'")
+                    
+                    logger.info(f"🛍️ Calling MCP get_policies_sync...")
+                    mcp_response = shopify_mcp_service.get_policies_sync(rewritten_query)
+                    logger.info(f"🛍️ MCP policy search completed")
+                    
+                    # Log policy response
+                    logger.info(f"🛍️ Policy Response Analysis:")
+                    logger.info(f"🛍️   - Has error: {mcp_response.get('error') is not None}")
+                    logger.info(f"🛍️   - Error: {mcp_response.get('error')}")
+                    
+                    policies = mcp_response.get('policies', {})
+                    if policies:
+                        logger.info(f"🛍️   - Policies found: {len(policies) if isinstance(policies, dict) else type(policies)}")
+                        if isinstance(policies, dict):
+                            for policy_key in policies.keys():
+                                logger.info(f"🛍️     - {policy_key}")
+                    
+                    if mcp_response.get('error'):
+                        logger.warning(f"🛍️ MCP policy search failed: {mcp_response['error']}")
+                        logger.info(f"🛍️ Falling back to embeddings search...")
+                        
+                        # Fallback to embeddings
+                        if not matches:
+                            logger.info(f"🛍️ Performing semantic search for policy info...")
+                            matches = semantic_search(embedding, site_id)
+                            logger.info(f"🛍️ Semantic search returned {len(matches)} matches")
+                    else:
+                        mcp_context['policies'] = policies
+                        logger.info(f"🛍️ ✅ MCP policy search successful!")
+                    
+                    # Track policy analytics
+                    if mp:
+                        mp.track(distinct_id, "mcp_policy_search_detailed", {
+                            "site_id": site_id,
+                            "session_id": session_id,
+                            "shopify_domain": mcp_domain,
+                            "policy_query": rewritten_query,
+                            "policies_found": list(policies.keys()) if isinstance(policies, dict) else [],
+                            "error": mcp_response.get('error'),
+                            "query_type": query_type
+                        })
+                
+                else:
+                    logger.info(f"🛍️ Query type '{query_type}' does not require MCP processing")
+                        
+            except Exception as e:
+                logger.error(f"🛍️ ===== MCP INTEGRATION EXCEPTION =====")
+                logger.error(f"🛍️ Exception type: {type(e).__name__}")
+                logger.error(f"🛍️ Exception message: {str(e)}")
+                logger.error(f"🛍️ Shopify domain: {shopify_domain}")
+                logger.error(f"🛍️ Query type: {query_type}")
+                logger.error(f"🛍️ Search parameters: {search_parameters}")
+                
+                # Log full traceback
+                import traceback
+                logger.error(f"🛍️ Full traceback:")
+                for line in traceback.format_exc().split('\n'):
+                    if line.strip():
+                        logger.error(f"🛍️   {line}")
+                
+                sentry_sdk.capture_exception(e)
+                
+                # Always fallback to embeddings if MCP fails
+                logger.info(f"🛍️ Falling back to embeddings after exception...")
+                if not matches:
+                    logger.info(f"🛍️ Performing emergency semantic search...")
+                    matches = semantic_search(embedding, site_id)
+                    logger.info(f"🛍️ Emergency semantic search returned {len(matches)} matches")
+                    
+                if mp:
+                    mp.track(distinct_id, "mcp_integration_exception", {
+                        "site_id": site_id,
+                        "shopify_domain": shopify_domain,
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "query_type": query_type,
+                        "search_parameters": search_parameters,
+                        "fallback_matches": len(matches)
+                    })
+            
+            logger.info(f"🛍️ ===== SHOPIFY MCP INTEGRATION END =====")
+            logger.info(f"🛍️ Final MCP context: products={len(mcp_context.get('products', []))}, policies={bool(mcp_context.get('policies'))}")
+        
+        else:
+            # Log why MCP was skipped
+            if not is_shopify:
+                logger.info(f"🛍️ Skipping MCP: Not a Shopify store")
+            elif not needs_mcp:
+                logger.info(f"🛍️ Skipping MCP: Query type '{query_type}' doesn't need MCP")
+            elif not shopify_domain:
+                logger.info(f"🛍️ Skipping MCP: No Shopify domain configured")
+            else:
+                logger.info(f"🛍️ Skipping MCP: Unknown reason (is_shopify={is_shopify}, needs_mcp={needs_mcp}, shopify_domain={shopify_domain})")
+
+
+
+
+        # ===== ENHANCED MCP INTEGRATION (NEW) =====
         if is_shopify and needs_mcp and shopify_domain:
             try:
                 logger.info(f"Starting MCP search for Shopify store: {shopify_domain}")
                 
-                # Connect to MCP - NO ACCESS TOKEN NEEDED!
-                shopify_mcp_service.connect_sync(shopify_domain)
+                # Ensure domain format is correct for MCP
+                mcp_domain = shopify_domain
+                if not mcp_domain.endswith('.myshopify.com'):
+                    # If it's a custom domain, try to find the .myshopify.com equivalent
+                    # For now, you might need to store both in custom_config
+                    if not mcp_domain.startswith('http'):
+                        # Try common patterns
+                        store_name = mcp_domain.split('.')[0]
+                        mcp_domain = f"{store_name}.myshopify.com"
                 
-                # Route to appropriate MCP function
+                # Connect to MCP - No auth needed!
+                shopify_mcp_service.connect_sync(mcp_domain)
+                
                 if query_type == 'product_search':
-                    logger.info(f"Searching products with query: {rewritten_query}")
-                    logger.debug(f"Search parameters: {search_parameters}")
+                    logger.info(f"Searching products: {rewritten_query}")
                     
-                    # Build context from search parameters
+                    # Build context from search parameters  
                     context_parts = []
                     if search_parameters.get('product_features'):
                         context_parts.append(f"Looking for {', '.join(search_parameters['product_features'])}")
-                    if search_parameters.get('price_range'):
-                        if 'max' in search_parameters['price_range']:
-                            context_parts.append(f"Budget up to ${search_parameters['price_range']['max']}")
+                    if search_parameters.get('price_range', {}).get('max'):
+                        context_parts.append(f"Budget up to {search_parameters['price_range']['max']}")
                     
                     context = ". ".join(context_parts) if context_parts else ""
                     
@@ -745,10 +994,9 @@ def advanced_ask_endpoint():
                         context=context
                     )
                     
-                    # Check for errors in response
                     if mcp_response.get('error'):
-                        logger.error(f"MCP product search error: {mcp_response['error']}")
-                        # Fallback to embeddings
+                        logger.warning(f"MCP product search failed: {mcp_response['error']}")
+                        # Fallback to embeddings if MCP fails
                         if not matches:
                             matches = semantic_search(embedding, site_id)
                     else:
@@ -761,52 +1009,52 @@ def advanced_ask_endpoint():
                         mp.track(distinct_id, "mcp_product_search", {
                             "site_id": site_id,
                             "session_id": session_id,
+                            "shopify_domain": mcp_domain,
                             "product_count": len(mcp_context.get('products', [])),
                             "search_params": search_parameters,
-                            "has_pagination": bool(mcp_context.get('pagination')),
                             "error": mcp_response.get('error')
                         })
                         
                 elif query_type == 'policy_question':
                     logger.info("Fetching store policies via MCP")
                     
-                    mcp_response = shopify_mcp_service.get_policies_sync()
+                    mcp_response = shopify_mcp_service.get_policies_sync(rewritten_query)
                     
                     if mcp_response.get('error'):
-                        logger.error(f"MCP policy fetch error: {mcp_response['error']}")
+                        logger.warning(f"MCP policy fetch failed: {mcp_response['error']}")
+                        # Fallback to embeddings
+                        if not matches:
+                            matches = semantic_search(embedding, site_id)
                     else:
                         mcp_context['policies'] = mcp_response.get('policies', {})
-                        logger.info(f"Fetched policies via MCP")
+                        logger.info("Fetched policies via MCP")
                     
                     if mp:
                         mp.track(distinct_id, "mcp_policy_fetch", {
                             "site_id": site_id,
                             "session_id": session_id,
+                            "shopify_domain": mcp_domain,
                             "policies_fetched": list(mcp_context.get('policies', {}).keys()),
                             "error": mcp_response.get('error')
                         })
                         
             except Exception as e:
-                logger.error(f"MCP search failed with exception: {type(e).__name__}: {e}")
+                logger.error(f"MCP integration failed: {type(e).__name__}: {e}")
                 sentry_sdk.capture_exception(e)
                 
-                # Detailed error logging
-                import traceback
-                logger.error(f"MCP Traceback: {traceback.format_exc()}")
-                
-                # Fallback to embeddings if MCP fails
+                # Always fallback to embeddings if MCP fails
                 if not matches:
-                    logger.info("Falling back to embeddings search after MCP failure")
+                    logger.info("Falling back to embeddings after MCP failure")
                     matches = semantic_search(embedding, site_id)
                     
                 if mp:
                     mp.track(distinct_id, "mcp_error", {
                         "site_id": site_id,
+                        "shopify_domain": shopify_domain,
                         "error_type": type(e).__name__,
                         "error_message": str(e),
                         "query_type": query_type
                     })
-
 
 
         if mp:
@@ -818,63 +1066,109 @@ def advanced_ask_endpoint():
             })
         
         
+        # ===== CONTEXT BUILDING WITH DETAILED LOGGING =====
+        logger.info(f"🔗 ===== CONTEXT BUILDING START =====")
+        logger.info(f"🔗 Embedding matches: {len(matches)}")
+        logger.info(f"🔗 MCP products: {len(mcp_context.get('products', []))}")
+        logger.info(f"🔗 MCP policies: {bool(mcp_context.get('policies'))}")
+        
         # Build context from search results and MCP data
         embedding_context = "\n\n".join(
             match.get("detail") or match.get("text") or "" 
             for match in matches if match
         )
+        logger.info(f"🔗 Embedding context length: {len(embedding_context)} characters")
 
+        # Enhanced product context for Shopify with detailed logging
         product_context = ""
         if mcp_context.get('products'):
+            logger.info(f"🔗 Building product context from {len(mcp_context['products'])} products...")
+            
             product_lines = []
-            for i, product in enumerate(mcp_context['products'][:5]):  # Limit to 5 products
-                product_line = f"\n{i+1}. **{product.get('title', 'Unknown Product')}**"
+            for i, product in enumerate(mcp_context['products'][:6]):  # Show up to 6 products
+                logger.debug(f"🔗 Processing product {i}: {product.get('title', 'No title')}")
                 
-                # Price information
-                if product.get('price'):
-                    if product.get('price_max') and product['price'] != product['price_max']:
-                        product_line += f"\n   Price: {product.get('currency', 'INR')} {product['price']} - {product['price_max']}"
-                    else:
-                        product_line += f"\n   Price: {product.get('currency', 'INR')} {product['price']}"
+                # Build product line with better formatting
+                title = product.get('title', 'Unknown Product')
+                price = product.get('price', 0)
+                currency = product.get('currency', 'INR')
+                in_stock = product.get('inStock', True)
+                description = product.get('description', '').strip()
                 
-                # Description
-                if product.get('description'):
-                    desc = product['description'][:150] + "..." if len(product['description']) > 150 else product['description']
-                    product_line += f"\n   Description: {desc}"
-                
-                # Availability
-                if product.get('inStock'):
-                    product_line += "\n   ✅ In Stock"
+                # Format price nicely
+                if currency == 'INR':
+                    price_display = f"₹{price:,.0f}"
+                elif currency == 'USD':
+                    price_display = f"${price:,.2f}"
                 else:
-                    product_line += "\n   ❌ Out of Stock"
-                    
-                # Tags
-                if product.get('tags'):
-                    product_line += f"\n   Tags: {', '.join(product['tags'][:5])}"
+                    price_display = f"{currency} {price:,.2f}"
+                
+                # Stock status
+                stock_emoji = "✅" if in_stock else "❌"
+                stock_text = "In Stock" if in_stock else "Out of Stock"
+                
+                # Build the product line
+                product_line = f"\n**{i+1}. {title}**"
+                product_line += f"\n   💰 Price: {price_display}"
+                product_line += f"\n   {stock_emoji} {stock_text}"
+                
+                # Add description if available and concise
+                if description and len(description) <= 100:
+                    product_line += f"\n   📝 {description}"
+                elif description:
+                    product_line += f"\n   📝 {description[:80]}..."
+                
+                # Add URL if available
+                if product.get('url'):
+                    product_line += f"\n   🔗 [View Details]({product['url']})"
                     
                 product_lines.append(product_line)
+                logger.debug(f"🔗 Product {i} formatted: {price_display}, {stock_text}")
             
-            product_context = "\n\n**Available Products:**" + "\n".join(product_lines)
+            # Build the complete product context
+            product_context = f"\n\n**🛍️ Available Products ({len(mcp_context['products'])} found):**"
+            product_context += "".join(product_lines)
             
-            # Add pagination note if more products available
-            if mcp_context.get('pagination', {}).get('hasNextPage'):
-                product_context += "\n\n*More products available. Ask to see more if interested.*"
+            # Add pagination info if more products available
+            pagination = mcp_context.get('pagination', {})
+            if pagination.get('hasNextPage'):
+                total_pages = pagination.get('maxPages', 'many')
+                current_page = pagination.get('currentPage', 1)
+                product_context += f"\n\n*💡 Showing page {current_page} of {total_pages}. Ask to see more options!*"
+                logger.info(f"🔗 Added pagination info: page {current_page} of {total_pages}")
             
-            logger.debug(f"Product context built with {len(mcp_context['products'])} products")
+            logger.info(f"🔗 Product context built: {len(product_context)} characters")
 
-
-        # Build policy context if available
+        # Policy context (if available)
         policy_context = ""
         if mcp_context.get('policies'):
+            logger.info(f"🔗 Building policy context...")
+            
             policy_lines = []
-            for policy_type, policy_data in mcp_context['policies'].items():
-                if isinstance(policy_data, dict) and policy_data.get('body'):
-                    policy_lines.append(f"{policy_type}: {policy_data['body'][:200]}...")
+            policies = mcp_context['policies']
+            
+            if isinstance(policies, dict):
+                for policy_type, policy_data in policies.items():
+                    logger.debug(f"🔗 Processing policy: {policy_type}")
+                    
+                    if isinstance(policy_data, dict) and policy_data.get('content'):
+                        content = policy_data['content'][:200] + "..." if len(policy_data['content']) > 200 else policy_data['content']
+                        policy_lines.append(f"**{policy_type}**: {content}")
+                    elif isinstance(policy_data, str):
+                        content = policy_data[:200] + "..." if len(policy_data) > 200 else policy_data
+                        policy_lines.append(f"**{policy_type}**: {content}")
+            
             if policy_lines:
-                policy_context = "\n\nStore Policies:\n" + "\n".join(policy_lines)
+                policy_context = "\n\n**📋 Store Policies:**\n" + "\n".join(policy_lines)
+                logger.info(f"🔗 Policy context built: {len(policy_context)} characters")
 
         # Combine all contexts
         context = embedding_context + product_context + policy_context
+        logger.info(f"🔗 Total context length: {len(context)} characters")
+        logger.info(f"🔗 Context breakdown: embeddings={len(embedding_context)}, products={len(product_context)}, policies={len(policy_context)}")
+        logger.info(f"🔗 ===== CONTEXT BUILDING END =====")
+
+
 
         # Prepare messages for OpenAI
         updated_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
