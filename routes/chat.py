@@ -13,7 +13,7 @@ from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
-from services.shopify_mcp_service import ShopifyMCPClient
+from services.shopify_mcp_service import ShopifyMCPService
 
 # Import OpenAI v1.0+ style
 from openai import OpenAI
@@ -26,7 +26,7 @@ jwt_service = JWTService()
 domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
-shopify_mcp_service = ShopifyMCPClient()  # ADD THIS LINE
+shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
 
 # Environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -715,12 +715,13 @@ def advanced_ask_endpoint():
         else:
             logger.info(f"Skipping embeddings search for query type: {query_type}")
 
-        # Perform MCP search if needed and site is Shopify
+
+# Perform MCP search if needed and site is Shopify
         if is_shopify and needs_mcp and shopify_domain:
             try:
                 logger.info(f"Starting MCP search for Shopify store: {shopify_domain}")
                 
-                # Connect to MCP - just sets the URL
+                # Connect to MCP - NO ACCESS TOKEN NEEDED!
                 shopify_mcp_service.connect_sync(shopify_domain)
                 
                 # Route to appropriate MCP function
@@ -728,14 +729,16 @@ def advanced_ask_endpoint():
                     logger.info(f"Searching products with query: {rewritten_query}")
                     logger.debug(f"Search parameters: {search_parameters}")
                     
-                    # Build context string from parameters
-                    context = ""
+                    # Build context from search parameters
+                    context_parts = []
                     if search_parameters.get('product_features'):
-                        context = f"Customer looking for {', '.join(search_parameters['product_features'])}"
-                    if search_parameters.get('price_range') and 'max' in search_parameters['price_range']:
-                        context += f" with budget up to ${search_parameters['price_range']['max']}"
+                        context_parts.append(f"Looking for {', '.join(search_parameters['product_features'])}")
+                    if search_parameters.get('price_range'):
+                        if 'max' in search_parameters['price_range']:
+                            context_parts.append(f"Budget up to ${search_parameters['price_range']['max']}")
                     
-                    # Call MCP product search
+                    context = ". ".join(context_parts) if context_parts else ""
+                    
                     mcp_response = shopify_mcp_service.search_products_sync(
                         rewritten_query,
                         search_parameters,
@@ -745,7 +748,9 @@ def advanced_ask_endpoint():
                     # Check for errors in response
                     if mcp_response.get('error'):
                         logger.error(f"MCP product search error: {mcp_response['error']}")
-                        # Don't fail completely - just log and continue
+                        # Fallback to embeddings
+                        if not matches:
+                            matches = semantic_search(embedding, site_id)
                     else:
                         mcp_context['products'] = mcp_response.get('products', [])
                         mcp_context['pagination'] = mcp_response.get('pagination', {})
@@ -763,18 +768,37 @@ def advanced_ask_endpoint():
                         })
                         
                 elif query_type == 'policy_question':
-                    logger.info("Policy questions not yet implemented via MCP")
-                    # For now, fall back to embeddings for policies
+                    logger.info("Fetching store policies via MCP")
                     
+                    mcp_response = shopify_mcp_service.get_policies_sync()
+                    
+                    if mcp_response.get('error'):
+                        logger.error(f"MCP policy fetch error: {mcp_response['error']}")
+                    else:
+                        mcp_context['policies'] = mcp_response.get('policies', {})
+                        logger.info(f"Fetched policies via MCP")
+                    
+                    if mp:
+                        mp.track(distinct_id, "mcp_policy_fetch", {
+                            "site_id": site_id,
+                            "session_id": session_id,
+                            "policies_fetched": list(mcp_context.get('policies', {}).keys()),
+                            "error": mcp_response.get('error')
+                        })
+                        
             except Exception as e:
                 logger.error(f"MCP search failed with exception: {type(e).__name__}: {e}")
                 sentry_sdk.capture_exception(e)
                 
-                # Log full traceback for debugging
+                # Detailed error logging
                 import traceback
                 logger.error(f"MCP Traceback: {traceback.format_exc()}")
                 
-                # Don't let MCP failure break the whole chat
+                # Fallback to embeddings if MCP fails
+                if not matches:
+                    logger.info("Falling back to embeddings search after MCP failure")
+                    matches = semantic_search(embedding, site_id)
+                    
                 if mp:
                     mp.track(distinct_id, "mcp_error", {
                         "site_id": site_id,
@@ -800,7 +824,6 @@ def advanced_ask_endpoint():
             for match in matches if match
         )
 
-        # Build enhanced product context if available
         product_context = ""
         if mcp_context.get('products'):
             product_lines = []
@@ -809,11 +832,10 @@ def advanced_ask_endpoint():
                 
                 # Price information
                 if product.get('price'):
-                    currency = product.get('currency', 'INR')
                     if product.get('price_max') and product['price'] != product['price_max']:
-                        product_line += f"\n   Price: {currency} {product['price']} - {product['price_max']}"
+                        product_line += f"\n   Price: {product.get('currency', 'INR')} {product['price']} - {product['price_max']}"
                     else:
-                        product_line += f"\n   Price: {currency} {product['price']}"
+                        product_line += f"\n   Price: {product.get('currency', 'INR')} {product['price']}"
                 
                 # Description
                 if product.get('description'):
@@ -826,9 +848,7 @@ def advanced_ask_endpoint():
                 else:
                     product_line += "\n   ❌ Out of Stock"
                     
-                # Product type and tags
-                if product.get('product_type'):
-                    product_line += f"\n   Type: {product['product_type']}"
+                # Tags
                 if product.get('tags'):
                     product_line += f"\n   Tags: {', '.join(product['tags'][:5])}"
                     
@@ -840,16 +860,8 @@ def advanced_ask_endpoint():
             if mcp_context.get('pagination', {}).get('hasNextPage'):
                 product_context += "\n\n*More products available. Ask to see more if interested.*"
             
-            # Add filter suggestions if available
-            if mcp_context.get('filters'):
-                filter_suggestions = []
-                for filter_group in mcp_context['filters'][:2]:  # Show max 2 filter types
-                    if filter_group.get('label'):
-                        filter_suggestions.append(filter_group['label'])
-                if filter_suggestions:
-                    product_context += f"\n\n*You can also filter by: {', '.join(filter_suggestions)}*"
-            
             logger.debug(f"Product context built with {len(mcp_context['products'])} products")
+
 
         # Build policy context if available
         policy_context = ""
