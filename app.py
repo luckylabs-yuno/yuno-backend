@@ -86,9 +86,14 @@ def get_site_id_key():
 
 # Import and register blueprints AFTER CORS setup
 from routes.auth import auth_bp
-from routes.chat import chat_bp
 from routes.onboarding import onboarding_bp  # NEW IMPORT
 from routes.dashboard import dashboard_bp  # Add this import
+from routes.chat import chat_bp                    # General chat
+from routes.chat_shopify import shopify_chat_bp    # Shopify chat
+
+# Register them with different prefixes
+app.register_blueprint(chat_bp, url_prefix='/')         # Makes /ask
+app.register_blueprint(shopify_chat_bp, url_prefix='/shopify')  # Makes /shopify/ask
 
 # Register blueprints
 app.register_blueprint(onboarding_bp, url_prefix='/onboarding')  # NEW REGISTRATION - Onboarding endpoints

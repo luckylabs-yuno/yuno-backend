@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 # Import OpenAI v1.0+ style
 from openai import OpenAI
 
-chat_bp = Blueprint('chat', __name__)
+shopify_chat_bp = Blueprint('shopify_chat', __name__)
 logger = logging.getLogger(__name__)
 
 # Initialize services
@@ -1047,10 +1047,10 @@ def generate_intelligent_follow_up(mcp_response, user_query, intent):
     }
 
 
-# Enhanced /ask endpoint
-@chat_bp.route('/shopify/ask', methods=['POST', 'OPTIONS'])
+# Enhanced /shopify/ask endpoint
+@shopify_chat_bp.route('/ask', methods=['POST', 'OPTIONS'])
 @require_widget_token
-def advanced_ask_endpoint():
+def shopify_ask_endpoint():  # Rename function too for clarity
     """
     Advanced chat endpoint with JWT authentication, semantic search, 
     lead capture, analytics tracking, and comprehensive logging
@@ -1862,7 +1862,7 @@ def advanced_ask_endpoint():
 
 # Health check endpoint
 @chat_bp.route('/health', methods=['GET', 'OPTIONS'])
-def chat_health():
+def shopify_chat_health():
     """Health check for chat service"""
     return jsonify({
         "status": "healthy",
@@ -1872,7 +1872,7 @@ def chat_health():
 
 # Debug endpoints
 @chat_bp.route('/debug', methods=['GET', 'OPTIONS'])
-def debug_components():
+def shopify_debug_components():
     """Debug endpoint to test all components and environment"""
     debug_info = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -1937,7 +1937,7 @@ def debug_components():
 
 @chat_bp.route('/debug/ask-simple', methods=['POST', 'OPTIONS'])
 @require_widget_token
-def debug_ask_simple():
+def shopify_debug_ask_simple():
     """Simplified ask endpoint with detailed error logging"""
     debug_steps = []
     
