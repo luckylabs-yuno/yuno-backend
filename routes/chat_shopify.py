@@ -5,8 +5,9 @@ import os
 import requests
 import re
 from datetime import datetime
+import time
 from functools import wraps
-from typing import List
+from typing import List, Dict, Optional
 from services.jwt_service import JWTService
 from services.domain_service import DomainService
 from services.rate_limit_service import RateLimitService
@@ -49,6 +50,165 @@ if MIXPANEL_TOKEN:
         mp = Mixpanel(MIXPANEL_TOKEN)
     except ImportError:
         logger.warning("Mixpanel not available - install with: pip install mixpanel")
+
+# Add caching mechanism
+prompt_cache = {}
+CACHE_DURATION = 300  # 5 minutes
+
+def get_site_prompts_and_models(site_id: str) -> Dict:
+    """
+    Get all prompts and models for a site with caching
+    """
+    cache_key = f"prompts_{site_id}"
+    current_time = time.time()
+    
+    # Check cache first
+    if cache_key in prompt_cache:
+        cached_data = prompt_cache[cache_key]
+        if current_time - cached_data['timestamp'] < CACHE_DURATION:
+            logger.debug(f"Using cached prompts for site {site_id}")
+            return cached_data['data']
+    
+    try:
+        from supabase import create_client
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Fetch all prompt and model data
+        resp = supabase\
+            .table("custom_detail")\
+            .select("site_prompt, system_prompt, system_prompt_2, rewriter_prompt, shopify_instructions, rewriter_model, main_model, prompts_cache_version")\
+            .eq("site_id", site_id)\
+            .single()\
+            .execute()
+        
+        if resp.data:
+            data = resp.data
+            
+            # Build prompts dict with fallbacks to defaults
+            prompts_and_models = {
+                # Prompts (fallback to hardcoded defaults if None)
+                'system_prompt': data.get('system_prompt') or SYSTEM_PROMPT,
+                'system_prompt_2': data.get('system_prompt_2') or SYSTEM_PROMPT_2,
+                'rewriter_prompt': data.get('rewriter_prompt') or get_default_rewriter_prompt(),
+                'custom_prompt': data.get('site_prompt'),  # Can be None
+                'shopify_instructions': data.get('shopify_instructions'),  # Can be None
+                
+                # Models (fallback to defaults)
+                'rewriter_model': data.get('rewriter_model') or 'gpt-4o-mini-2024-07-18',
+                'main_model': data.get('main_model') or 'gpt-4.1-mini-2025-04-14',
+                
+                # Cache metadata
+                'cache_version': data.get('prompts_cache_version', 1)
+            }
+            
+            # Cache the result
+            prompt_cache[cache_key] = {
+                'data': prompts_and_models,
+                'timestamp': current_time
+            }
+            
+            logger.info(f"Loaded prompts for site {site_id} (cache version: {prompts_and_models['cache_version']})")
+            return prompts_and_models
+        else:
+            logger.warning(f"No custom prompts found for site {site_id}, using defaults")
+            return get_default_prompts_and_models()
+            
+    except Exception as e:
+        logger.warning(f"Failed to load prompts for site {site_id}: {e}, using defaults")
+        return get_default_prompts_and_models()
+
+def get_default_prompts_and_models() -> Dict:
+    """Fallback to hardcoded defaults"""
+    return {
+        'system_prompt': SYSTEM_PROMPT,
+        'system_prompt_2': SYSTEM_PROMPT_2,
+        'rewriter_prompt': get_default_rewriter_prompt(),
+        'custom_prompt': None,
+        'shopify_instructions': None,
+        'rewriter_model': 'gpt-4o-mini-2024-07-18',
+        'main_model': 'gpt-4.1-mini-2025-04-14',
+        'cache_version': 0
+    }
+
+def get_default_rewriter_prompt() -> str:
+    """Extract current rewriter prompt as default"""
+    return """
+    You are a JSON-only query analysis service. Analyze the user's query and determine intent, language, and data routing needs.
+
+        CRITICAL RULES:
+        1. Focus on the ACTUAL user intent, not assumed context
+        2. Product questions = product_search (even if asking "do you have", "show me", "what are")
+        3. Only classify as order_status if explicitly asking about existing orders or tracking
+        4. Rewrite queries to be clearer but keep the original intent
+
+        Query Types & Examples:
+
+        **product_search** (USE THIS FOR):
+        - "Do you have trimmers under 2000?" → product_search
+        - "Show me beard trimmers" → product_search  
+        - "What trimmers are available?" → product_search
+        - "Any good trimmers for sale?" → product_search
+        - "I need a trimmer" → product_search
+        - "trimmer prices" → product_search
+
+        **policy_question** (USE THIS FOR):
+        - "What is your return policy?" → policy_question
+        - "Shipping information" → policy_question
+        - "Do you offer warranty?" → policy_question
+
+        **order_status** (ONLY USE FOR):
+        - "Where is my order?" → order_status
+        - "Track my order #123" → order_status  
+        - "Order delivery status" → order_status
+        - "When will my order arrive?" → order_status
+
+        **company_info** (USE THIS FOR):
+        - "About your company" → company_info
+        - "Contact information" → company_info
+        - "Who are you?" → company_info
+
+        **general_chat** (USE THIS FOR):
+        - "Hi", "Hello", "Thanks" → general_chat
+        - Unclear or ambiguous queries → general_chat
+
+        ROUTING RULES:
+        - product_search → needs_mcp: true, needs_embeddings: false
+        - policy_question → needs_mcp: true, needs_embeddings: false  
+        - order_status → needs_mcp: true, needs_embeddings: false
+        - company_info → needs_mcp: false, needs_embeddings: true
+        - general_chat → needs_mcp: false, needs_embeddings: true
+
+        For product_search, extract these parameters:
+        - product_features: ["trimmer", "beard", "electric"] 
+        - price_range: {{"max": 2000}} if mentioned
+        - category: "trimmer" if identifiable
+
+        Language Detection:
+        Detect the user's LATEST message language: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
+
+        Chat History:
+        {chat_log}
+
+        User's Latest Message:
+        {latest}
+
+        ANALYZE THE QUERY CAREFULLY. Respond with valid JSON only:
+
+        {{
+            "rewritten_prompt": "clear English version of user query",
+            "ques_lang": "detected_language", 
+            "query_type": "one_of_five_types",
+            "needs_mcp": true_or_false,
+            "needs_embeddings": true_or_false,
+            "search_parameters": {{
+                "product_features": ["feature1", "feature2"],
+                "price_range": {{"max": 2000}},
+                "category": "product_category"
+            }}
+        }}
+ 
+    """
+
 
 
 # AI Prompts
@@ -596,84 +756,14 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
         ])
 
         # FIXED PROMPT with better examples and clearer instructions
-        enhanced_prompt = f"""
-        You are a JSON-only query analysis service. Analyze the user's query and determine intent, language, and data routing needs.
+        enhanced_prompt = config['rewriter_prompt'].format(
+            chat_log=chat_log,
+            latest=latest
+        )
 
-        CRITICAL RULES:
-        1. Focus on the ACTUAL user intent, not assumed context
-        2. Product questions = product_search (even if asking "do you have", "show me", "what are")
-        3. Only classify as order_status if explicitly asking about existing orders or tracking
-        4. Rewrite queries to be clearer but keep the original intent
-
-        Query Types & Examples:
-
-        **product_search** (USE THIS FOR):
-        - "Do you have trimmers under 2000?" → product_search
-        - "Show me beard trimmers" → product_search  
-        - "What trimmers are available?" → product_search
-        - "Any good trimmers for sale?" → product_search
-        - "I need a trimmer" → product_search
-        - "trimmer prices" → product_search
-
-        **policy_question** (USE THIS FOR):
-        - "What is your return policy?" → policy_question
-        - "Shipping information" → policy_question
-        - "Do you offer warranty?" → policy_question
-
-        **order_status** (ONLY USE FOR):
-        - "Where is my order?" → order_status
-        - "Track my order #123" → order_status  
-        - "Order delivery status" → order_status
-        - "When will my order arrive?" → order_status
-
-        **company_info** (USE THIS FOR):
-        - "About your company" → company_info
-        - "Contact information" → company_info
-        - "Who are you?" → company_info
-
-        **general_chat** (USE THIS FOR):
-        - "Hi", "Hello", "Thanks" → general_chat
-        - Unclear or ambiguous queries → general_chat
-
-        ROUTING RULES:
-        - product_search → needs_mcp: true, needs_embeddings: false
-        - policy_question → needs_mcp: true, needs_embeddings: false  
-        - order_status → needs_mcp: true, needs_embeddings: false
-        - company_info → needs_mcp: false, needs_embeddings: true
-        - general_chat → needs_mcp: false, needs_embeddings: true
-
-        For product_search, extract these parameters:
-        - product_features: ["trimmer", "beard", "electric"] 
-        - price_range: {{"max": 2000}} if mentioned
-        - category: "trimmer" if identifiable
-
-        Language Detection:
-        Detect the user's LATEST message language: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
-
-        Chat History:
-        {chat_log}
-
-        User's Latest Message:
-        {latest}
-
-        ANALYZE THE QUERY CAREFULLY. Respond with valid JSON only:
-
-        {{
-            "rewritten_prompt": "clear English version of user query",
-            "ques_lang": "detected_language", 
-            "query_type": "one_of_five_types",
-            "needs_mcp": true_or_false,
-            "needs_embeddings": true_or_false,
-            "search_parameters": {{
-                "product_features": ["feature1", "feature2"],
-                "price_range": {{"max": 2000}},
-                "category": "product_category"
-            }}
-        }}
-        """
 
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini-2024-07-18",
+            model=config['rewriter_model'],  # 🆕 Dynamic model
             messages=[
                 {
                     "role": "system", 
@@ -1183,6 +1273,16 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         sentiment = None
         compliance_flag = None
         
+        # 🆕 LOAD DYNAMIC PROMPTS AND MODELS
+        prompts_config = get_site_prompts_and_models(site_id)
+
+        logger.info(f"🎯 Using prompts config for site {site_id}:")
+        logger.info(f"🎯   - Rewriter model: {prompts_config['rewriter_model']}")
+        logger.info(f"🎯   - Main model: {prompts_config['main_model']}")
+        logger.info(f"🎯   - Cache version: {prompts_config['cache_version']}")
+        logger.info(f"🎯   - Has custom system prompt: {bool(prompts_config['system_prompt'] != SYSTEM_PROMPT)}")
+        logger.info(f"🎯   - Has custom shopify instructions: {bool(prompts_config['shopify_instructions'])}")
+
         # Get latest user message
         latest_user_msg = next((m for m in reversed(messages) if m["role"] == "user"), None)
         if not latest_user_msg:
@@ -1604,7 +1704,7 @@ def shopify_ask_endpoint():  # Rename function too for clarity
 
 
         # Prepare messages for OpenAI
-        updated_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        updated_messages = [{"role": "system", "content": prompts_config['system_prompt']}]
         
         # Add recent conversation history
         recent_turns = [m for m in messages if m["role"] in ("user", "yuno", "assistant")][-4:]
@@ -1614,20 +1714,6 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 "content": m["content"]
             })
         
-        # Fetch custom prompt for this site
-        try:
-            from supabase import create_client
-            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-            resp = supabase\
-                .table("custom_detail")\
-                .select("site_prompt")\
-                .eq("site_id", site_id)\
-                .single()\
-                .execute()
-            custom_prompt = resp.data.get("site_prompt") if resp.data else None
-        except Exception as e:
-            logger.warning(f"Couldn't load custom_detail for site {site_id}: {e}")
-            custom_prompt = None
         
         language_instruction = ""
         if detected_language != "english":
@@ -1701,49 +1787,7 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 
                 logger.info(f"🔍 Final filtered products: {len(filtered_products)}")
 
-                shopify_instructions += f"""
-
-                🛍️ CRITICAL: USE ONLY THESE EXACT PRODUCTS - DO NOT MAKE UP ANY PRODUCTS
-
-                YOU MUST USE THESE EXACT PRODUCTS (copy exactly as shown):
-                {json.dumps(filtered_products, indent=2)}
-
-                MANDATORY INSTRUCTIONS:
-                1. You MUST use the exact "id", "title", "price", "image", "handle", "available" values from above
-                2. You MUST NOT create any new product IDs or names
-                3. You MUST NOT use placeholder products like "Basic Beard Trimmer" or "Product 10001"
-                4. You MUST copy the product data exactly as provided above
-                5. If you show products, they MUST be from the list above - no exceptions
-
-                EXAMPLE CORRECT RESPONSE (use real data from above):
-                {{
-                  "product_carousel": [
-                    {{
-                      "id": "gid://shopify/Product/8406627549338",
-                      "title": "Pro Beard Trimmer", 
-                      "price": "₹1,000",
-                      "image": "https://cdn.shopify.com/s/files/1/0459/6563/9834/files/pro_beard_kkk_32141c74-9f77-4950-8147-b277f74ed0c6.png?v=1748865085",
-                      "handle": "pro-beard-trimmer",
-                      "available": true
-                    }}
-                  ]
-                }}
-
-                QUICK REPLIES TO USE:
-                {json.dumps(dynamic_quick_replies)}
-
-                FOLLOW-UP:
-                - follow_up: {follow_up_data['follow_up']}
-                - follow_up_prompt: "{follow_up_data['follow_up_prompt']}"
-
-                SEARCH CONTEXT:
-                - Total products available: {mcp_context.get('pagination', {}).get('totalCount', 'unknown')}
-                - Products matching budget: {len(filtered_products)} out of {len(carousel_products)}
-                - User budget limit: ₹{search_parameters.get('price_range', {}).get('max', 'no limit')}
-
-                CRITICAL REMINDER: Use ONLY the products listed above. Do not invent any product names, IDs, or details.
-                SHOW 2-3 PRODUCTS: Include multiple products from the list to give users choice
-                """
+                shopify_instructions += prompts_config['shopify_instructions']
                 
             if mcp_context.get('policies'):
                 shopify_instructions += f"""
@@ -1755,11 +1799,11 @@ def shopify_ask_endpoint():  # Rename function too for clarity
             
             focused_prompt += shopify_instructions
 
-        # Add site-specific custom prompt if available
-        if custom_prompt:
+        # 🆕 ADD CUSTOM PROMPT IF EXISTS
+        if prompts_config['custom_prompt']:
             updated_messages.append({
                 "role": "system",
-                "content": custom_prompt
+                "content": prompts_config['custom_prompt']
             })
 
         # Log the final enhanced prompt
@@ -1774,7 +1818,8 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         # Add final system prompt to ensure JSON response
         updated_messages.append({
             "role": "system",
-            "content": SYSTEM_PROMPT_2
+            "content": prompts_config['system_prompt_2']  # Dynamic!
+
         })
         # Add final language prompt to ensure JSON response
         updated_messages.append({
@@ -1793,7 +1838,7 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         
         # Call OpenAI (v1.0+ syntax)
         completion = openai_client.chat.completions.create(
-            model="gpt-4.1-mini-2025-04-14",
+            model=prompts_config['main_model'],  # 🆕 Dynamic model
             messages=updated_messages,
             temperature=0.5
         )
