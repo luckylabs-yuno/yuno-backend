@@ -1048,7 +1048,7 @@ def generate_intelligent_follow_up(mcp_response, user_query, intent):
 
 
 # Enhanced /ask endpoint
-@chat_bp.route('/ask', methods=['POST', 'OPTIONS'])
+@chat_bp.route('/shopify/ask', methods=['POST', 'OPTIONS'])
 @require_widget_token
 def advanced_ask_endpoint():
     """
