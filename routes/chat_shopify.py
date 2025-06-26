@@ -400,6 +400,13 @@ Remember: Your goal is to guide users toward products, capture leads, and provid
 SYSTEM_PROMPT_2 = """
 You must respond with ONLY valid JSON that supports the unified message contract.
 
+🚨 CRITICAL PRODUCT RULE 🚨
+When product information is provided to you, you MUST use the EXACT product data given.
+- NEVER make up product names, IDs, prices, or details
+- NEVER use placeholder products like "Basic Product" or "Product 10001"
+- ALWAYS copy the exact "id", "title", "price", "image", "handle", "available" values provided
+- If products are provided, use them exactly as shown - no modifications or inventions
+
 REQUIRED RESPONSE FORMAT with optional enhancements:
 
 {
@@ -414,13 +421,13 @@ REQUIRED RESPONSE FORMAT with optional enhancements:
   },
   "product_carousel": [
     {
-      "id": "<product_id>",
-      "title": "<product_name>",
-      "price": "<formatted_price>",
+      "id": "<EXACT_ID_FROM_PROVIDED_DATA>",
+      "title": "<EXACT_TITLE_FROM_PROVIDED_DATA>",
+      "price": "<EXACT_PRICE_FROM_PROVIDED_DATA>",
       "compare_at_price": "<optional_strikethrough>",
-      "image": "<product_image_url>",
-      "handle": "<product_slug>",
-      "available": <true|false>
+      "image": "<EXACT_IMAGE_FROM_PROVIDED_DATA>",
+      "handle": "<EXACT_HANDLE_FROM_PROVIDED_DATA>",
+      "available": <EXACT_AVAILABILITY_FROM_PROVIDED_DATA>
     }
   ],
   "quick_replies": ["Option 1", "Option 2", "Option 3"],
@@ -438,6 +445,7 @@ PRODUCT CAROUSEL RULES:
 - Include when user shows buying intent (ProductInquiry, PricingInquiry)
 - Use products from MCP context when available
 - Max 3 products typically
+- MUST use exact data provided - no inventions or modifications
 - Include id, title, price as minimum required fields
 
 QUICK REPLIES RULES:
@@ -1023,6 +1031,55 @@ def debug_product_mapping(mcp_context, carousel_products):
         logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
     
     logger.info(f"🔍 ===== PRODUCT MAPPING DEBUG END =====")
+
+# Add this function to chat_shopify.py:
+
+def validate_llm_products(llm_response, filtered_products):
+    """Validate that LLM used the correct products and fix if needed"""
+    if not llm_response.get("product_carousel") or not filtered_products:
+        return llm_response
+    
+    llm_products = llm_response["product_carousel"]
+    provided_product_ids = {p["id"] for p in filtered_products}
+    
+    logger.info(f"🔍 Validating LLM products...")
+    logger.info(f"🔍 Expected product IDs: {provided_product_ids}")
+    
+    valid_products = []
+    invalid_count = 0
+    
+    for i, llm_product in enumerate(llm_products):
+        llm_id = llm_product.get("id", "")
+        logger.info(f"🔍 LLM Product {i+1} ID: {llm_id}")
+        
+        if llm_id in provided_product_ids:
+            # Valid product - LLM used correct data
+            valid_products.append(llm_product)
+            logger.info(f"🔍 ✅ Valid product: {llm_product.get('title')}")
+        else:
+            # Invalid product - LLM hallucinated
+            invalid_count += 1
+            logger.warning(f"🔍 ❌ Invalid product (hallucinated): {llm_product.get('title')} with ID {llm_id}")
+            
+            # Replace with correct product if available
+            if i < len(filtered_products):
+                correct_product = filtered_products[i]
+                valid_products.append(correct_product)
+                logger.info(f"🔍 🔧 Replaced with correct product: {correct_product.get('title')}")
+    
+    if invalid_count > 0:
+        logger.warning(f"🔍 Fixed {invalid_count} hallucinated products")
+        llm_response["product_carousel"] = valid_products
+        
+        # Update content to reflect correct products
+        if valid_products:
+            product_names = [p["title"] for p in valid_products[:2]]
+            if len(product_names) == 1:
+                llm_response["content"] = f"<b>Great choice!</b> We have the {product_names[0]} available under ₹2000!"
+            else:
+                llm_response["content"] = f"<b>Perfect!</b> Here are our {' and '.join(product_names)} under ₹2000!"
+    
+    return llm_response
 
 
 # Enhanced /shopify/ask endpoint
@@ -1629,18 +1686,39 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                                 filtered_products.append(product)
                 
                 logger.info(f"🔍 Final filtered products: {len(filtered_products)}")
-                
+
                 shopify_instructions += f"""
 
-                🛍️ ENHANCED PRODUCT RECOMMENDATION WITH REAL MCP DATA:
+                🛍️ CRITICAL: USE ONLY THESE EXACT PRODUCTS - DO NOT MAKE UP ANY PRODUCTS
 
-                PRODUCTS TO INCLUDE IN CAROUSEL (use exact data):
+                YOU MUST USE THESE EXACT PRODUCTS (copy exactly as shown):
                 {json.dumps(filtered_products, indent=2)}
 
-                SUGGESTED QUICK_REPLIES:
+                MANDATORY INSTRUCTIONS:
+                1. You MUST use the exact "id", "title", "price", "image", "handle", "available" values from above
+                2. You MUST NOT create any new product IDs or names
+                3. You MUST NOT use placeholder products like "Basic Beard Trimmer" or "Product 10001"
+                4. You MUST copy the product data exactly as provided above
+                5. If you show products, they MUST be from the list above - no exceptions
+
+                EXAMPLE CORRECT RESPONSE (use real data from above):
+                {{
+                  "product_carousel": [
+                    {{
+                      "id": "gid://shopify/Product/8406627549338",
+                      "title": "Pro Beard Trimmer", 
+                      "price": "₹1,000",
+                      "image": "https://cdn.shopify.com/s/files/1/0459/6563/9834/files/pro_beard_kkk_32141c74-9f77-4950-8147-b277f74ed0c6.png?v=1748865085",
+                      "handle": "pro-beard-trimmer",
+                      "available": true
+                    }}
+                  ]
+                }}
+
+                QUICK REPLIES TO USE:
                 {json.dumps(dynamic_quick_replies)}
 
-                FOLLOW-UP STRATEGY:
+                FOLLOW-UP:
                 - follow_up: {follow_up_data['follow_up']}
                 - follow_up_prompt: "{follow_up_data['follow_up_prompt']}"
 
@@ -1648,19 +1726,10 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 - Total products available: {mcp_context.get('pagination', {}).get('totalCount', 'unknown')}
                 - Products matching budget: {len(filtered_products)} out of {len(carousel_products)}
                 - User budget limit: ₹{search_parameters.get('price_range', {}).get('max', 'no limit')}
-                - Filter options available: {len(mcp_context.get('available_filters', []))} filter groups
-                - Has more pages: {mcp_context.get('pagination', {}).get('hasNextPage', False)}
 
-                INSTRUCTIONS:
-                1. Use the EXACT product data above in your product_carousel response
-                2. ONLY show products within the user's budget if specified
-                3. Use the suggested quick_replies to guide user interaction
-                4. Apply the follow_up strategy for continued engagement  
-                5. If user asks for more products, mention pagination availability
-                6. Reference total count when relevant to set expectations
-                7. If showing expensive products, mention the budget constraint
+                CRITICAL REMINDER: Use ONLY the products listed above. Do not invent any product names, IDs, or details.
                 """
-            
+                
             if mcp_context.get('policies'):
                 shopify_instructions += f"""
 
@@ -1741,6 +1810,10 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 "error": "Invalid JSON response from AI",
                 "raw_reply": raw_reply
             }), 500
+
+        # ADD THIS VALIDATION HERE:
+        if is_shopify and mcp_context.get('products'):
+            reply_json = validate_llm_products(reply_json, filtered_products)
 
         # Validate required fields
         if not reply_json.get("content"):
