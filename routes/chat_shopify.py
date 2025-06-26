@@ -1728,6 +1728,7 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 - User budget limit: ₹{search_parameters.get('price_range', {}).get('max', 'no limit')}
 
                 CRITICAL REMINDER: Use ONLY the products listed above. Do not invent any product names, IDs, or details.
+                SHOW 2-3 PRODUCTS: Include multiple products from the list to give users choice
                 """
                 
             if mcp_context.get('policies'):
@@ -2005,6 +2006,79 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 "error": "Internal server error",
                 "message": "Something went wrong processing your request"
             }), 500
+
+@shopify_chat_bp.route('/cart/add', methods=['POST', 'OPTIONS'])
+@require_widget_token
+def add_to_cart():
+    """Add product to cart using existing MCP service"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
+    try:
+        # Get token data from middleware
+        site_id = request.token_data['site_id']
+        
+        # Get request data
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        merchandise_id = data.get("merchandise_id")
+        quantity = data.get("quantity", 1)
+        
+        if not merchandise_id:
+            return jsonify({"error": "merchandise_id required"}), 400
+        
+        logger.info(f"🛒 Cart request: {merchandise_id} x {quantity}")
+        
+        # Get site configuration for Shopify domain
+        site_info = site_model.get_site_by_id(site_id)
+        if not site_info or not site_info.get('custom_config'):
+            return jsonify({"error": "Site not configured for Shopify"}), 404
+        
+        shopify_domain = site_info['custom_config'].get('shopify_domain')
+        if not shopify_domain:
+            return jsonify({"error": "Shopify domain not configured"}), 404
+        
+        # Use existing MCP service (same as product search)
+        try:
+            # Connect to MCP (same domain as product search)
+            shopify_mcp_service.connect_sync(shopify_domain)
+            
+            # Call cart update method
+            cart_result = shopify_mcp_service.update_cart_sync(merchandise_id, quantity)
+            
+            if cart_result["success"]:
+                logger.info(f"🛒 ✅ Cart operation successful")
+                return jsonify({
+                    "success": True,
+                    "message": "Cart updated successfully",
+                    "cart": cart_result["cart"],
+                    "checkout_url": cart_result["checkout_url"],
+                    "merchandise_id": merchandise_id,
+                    "quantity": quantity
+                })
+            else:
+                logger.error(f"🛒 ❌ Cart operation failed: {cart_result['error']}")
+                return jsonify({
+                    "error": "Cart update failed",
+                    "message": cart_result["error"]
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"🛒 MCP connection/call failed: {str(e)}")
+            return jsonify({
+                "error": "Cart service unavailable",
+                "message": str(e)
+            }), 503
+        
+    except Exception as e:
+        logger.exception(f"🛒 Cart endpoint failed: {str(e)}")
+        return jsonify({
+            "error": "Internal server error",
+            "message": "Cart operation failed"
+        }), 500
+
 
 # Health check endpoint
 @shopify_chat_bp.route('/health', methods=['GET', 'OPTIONS'])

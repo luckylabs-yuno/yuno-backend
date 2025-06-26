@@ -335,3 +335,98 @@ class ShopifyMCPService:
         
         # Transform and return (same logic as search_products_sync)
         return self._transform_search_results(result["data"])
+
+
+    def update_cart_sync(self, merchandise_id: str, quantity: int = 1) -> Dict:
+        """
+        Update cart using MCP update_cart tool
+        
+        Args:
+            merchandise_id: Shopify product variant ID (e.g., "gid://shopify/Product/123")
+            quantity: Quantity to add (1 to add, 0 to remove)
+        
+        Returns:
+            Dict with cart data and checkout_url
+        """
+        try:
+            logger.info(f"🛒 Updating cart: {merchandise_id} x {quantity}")
+            
+            # Build MCP arguments for update_cart tool
+            arguments = {
+                "lines": [
+                    {
+                        "merchandise_id": merchandise_id,
+                        "quantity": quantity
+                    }
+                ]
+            }
+            
+            logger.info(f"🛒 MCP cart arguments: {json.dumps(arguments, indent=2)}")
+            
+            # Call the MCP tool (same way as search_shop_catalog)
+            result = self._call_mcp_tool("update_cart", arguments)
+            
+            if result["error"]:
+                logger.error(f"🛒 Cart update failed: {result['error']}")
+                return {
+                    "success": False,
+                    "error": result["error"],
+                    "cart": None,
+                    "checkout_url": None
+                }
+            
+            # Parse the MCP response
+            data = result["data"]
+            
+            if not data or not data.get("content"):
+                logger.warning("🛒 No cart data returned from MCP")
+                return {
+                    "success": False,
+                    "error": "No cart data returned",
+                    "cart": None,
+                    "checkout_url": None
+                }
+            
+            # Extract cart information from MCP response
+            content = data.get("content", [])
+            cart_data = None
+            checkout_url = None
+            
+            # Parse the text content which contains JSON
+            for item in content:
+                if item.get("type") == "text":
+                    try:
+                        text_content = item.get("text", "{}")
+                        parsed_content = json.loads(text_content)
+                        
+                        # Extract cart data
+                        cart_data = parsed_content.get("cart", {})
+                        checkout_url = cart_data.get("checkout_url")
+                        
+                        logger.info(f"🛒 ✅ Cart updated successfully")
+                        logger.info(f"🛒 Checkout URL: {checkout_url}")
+                        logger.info(f"🛒 Cart total: {cart_data.get('cost', {}).get('total_amount', {}).get('amount', '0')}")
+                        
+                        break
+                        
+                    except json.JSONDecodeError as e:
+                        logger.error(f"🛒 Failed to parse cart response: {e}")
+                        continue
+            
+            return {
+                "success": True,
+                "error": None,
+                "cart": cart_data,
+                "checkout_url": checkout_url,
+                "merchandise_id": merchandise_id,
+                "quantity": quantity
+            }
+            
+        except Exception as e:
+            logger.error(f"🛒 Cart update exception: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "cart": None,
+                "checkout_url": None
+            }    
