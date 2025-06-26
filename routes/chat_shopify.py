@@ -806,191 +806,6 @@ def require_widget_token(f):
     
     return decorated_function
 
-def format_products_for_llm(mcp_products):
-    """Format MCP products for LLM context with structured product data"""
-    if not mcp_products:
-        return ""
-    
-    product_data = []
-    for i, product in enumerate(mcp_products[:6]):  # Limit to 6 products
-        # Extract core product data
-        product_info = {
-            "id": product.get('id', f"product_{i}"),
-            "title": product.get('title', 'Unknown Product'),
-            "price": product.get('price', 0),
-            "currency": product.get('currency', ''),
-            "inStock": product.get('inStock', True),
-            "description": product.get('description', ''),
-            "image": product.get('image', ''),
-            "url": product.get('url', '')
-        }
-        product_data.append(product_info)
-    
-    # Create structured context for LLM
-    context_lines = [f"\n**🛍️ AVAILABLE PRODUCTS FOR RECOMMENDATION:**"]
-    
-    for i, product in enumerate(product_data):
-        currency = product['currency']
-        price = product['price']
-        
-        # Format price
-        if currency == 'INR':
-            price_display = f"₹{price:,.0f}"
-        elif currency == 'USD':
-            price_display = f"${price:,.2f}"
-        else:
-            price_display = f"{currency} {price:,.2f}"
-        
-        # Stock status
-        stock_status = "✅ In Stock" if product['inStock'] else "❌ Out of Stock"
-        
-        context_lines.append(f"""
-        Product {i+1}:
-        - ID: {product['id']}
-        - Title: {product['title']}
-        - Price: {price_display}
-        - Stock: {stock_status}
-        - Description: {product['description'][:100]}...
-        - Image: {product['image']}"""
-        )
-    
-    context_lines.append(f"\n**IMPORTANT:** When recommending products, include them in 'product_carousel' array with exact ID, title, price format from above.")
-    
-    return "\n".join(context_lines)
-
-def map_shopify_products_to_carousel(mcp_response, max_products=3):
-    """Map Shopify MCP response to unified contract product_carousel format"""
-    if not mcp_response or not mcp_response.get('products'):
-        return []
-    
-    products = mcp_response['products']
-    carousel_products = []
-    
-    for product in products[:max_products]:
-        # Handle Shopify variants for pricing (use first available variant)
-        variants = product.get('variants', [])
-        first_variant = variants[0] if variants else {}
-        
-        # Extract price information
-        price_obj = first_variant.get('price', {})
-        price_display = format_shopify_price(price_obj)
-        
-        # Build carousel product
-        carousel_product = {
-            "id": first_variant.get('id') or product.get('id', ''),
-            "title": product.get('title', 'Unknown Product'),
-            "price": price_display,
-            "image": get_shopify_primary_image(product.get('images', [])),
-            "handle": product.get('handle', ''),
-            "available": first_variant.get('available', True)
-        }
-        
-        # Add compare_at_price if variant has it
-        compare_price_obj = first_variant.get('compareAtPrice')
-        if compare_price_obj:
-            carousel_product["compare_at_price"] = format_shopify_price(compare_price_obj)
-        
-        carousel_products.append(carousel_product)
-    
-    return carousel_products
-
-def get_shopify_primary_image(images):
-    """Get the primary product image URL from Shopify images array"""
-    if not images:
-        return ""
-    
-    # Handle different image structures
-    first_image = images[0]
-    if isinstance(first_image, dict):
-        return first_image.get('url', first_image.get('src', ''))
-    return str(first_image)
-
-def format_shopify_price(price_obj):
-    """Format Shopify price object to display string"""
-    if not price_obj:
-        return "Price not available"
-    
-    # Handle different price formats from Shopify
-    if isinstance(price_obj, dict):
-        amount = price_obj.get('amount', 0)
-        currency = price_obj.get('currencyCode', 'USD')
-    elif isinstance(price_obj, (int, float)):
-        amount = float(price_obj)
-        currency = 'USD'  # Default fallback
-    else:
-        return str(price_obj)  # Fallback to string representation
-    
-    # Format based on currency
-    try:
-        amount = float(amount)
-        if currency == 'USD':
-            return f"${amount:.2f}"
-        elif currency == 'EUR':
-            return f"€{amount:.2f}"
-        elif currency == 'GBP':
-            return f"£{amount:.2f}"
-        elif currency == 'INR':
-            return f"₹{amount:.0f}"
-        elif currency == 'CAD':
-            return f"C${amount:.2f}"
-        else:
-            return f"{currency} {amount:.2f}"
-    except (ValueError, TypeError):
-        return f"{currency} {amount}"
-
-def generate_dynamic_quick_replies(mcp_response, intent, query_type):
-    """Generate contextual quick replies from MCP available_filters and context"""
-    quick_replies = []
-    
-    # Add product-specific actions if we have products
-    if mcp_response.get('products'):
-        quick_replies.extend(["Add to Cart", "See details"])
-        
-        # Add filter-based options from available_filters
-        available_filters = mcp_response.get('available_filters', [])
-        
-        # Prioritize useful filters for quick replies
-        priority_filters = {
-            'productType': 'type',
-            'vendor': 'brand', 
-            'variantOption': 'options',
-            'price': 'price range'
-        }
-        
-        for filter_group in available_filters:
-            filter_type = filter_group.get('type', '')
-            if filter_type in priority_filters and len(quick_replies) < 3:
-                # Get first few filter values
-                values = filter_group.get('values', [])[:2]
-                for value in values:
-                    if len(quick_replies) < 3:
-                        label = value.get('label', str(value))
-                        # Keep labels short for UI
-                        if len(label) > 15:
-                            label = label[:12] + "..."
-                        quick_replies.append(f"Show {label}")
-    
-    # Add pagination option if more results available
-    pagination = mcp_response.get('pagination', {})
-    if pagination.get('hasNextPage') and len(quick_replies) < 3:
-        quick_replies.append("See more")
-    
-    # Fallback options based on intent if we don't have enough
-    if len(quick_replies) < 2:
-        if intent in ['ProductInquiry', 'PricingInquiry']:
-            fallback_options = ["Browse products", "Get help", "Contact sales"]
-        elif intent == 'SupportRequest':
-            fallback_options = ["Email support", "Live chat", "Call us"]
-        else:
-            fallback_options = ["Help me choose", "See options", "Contact support"]
-        
-        # Add fallback options to fill up to 3 total
-        for option in fallback_options:
-            if len(quick_replies) < 3 and option not in quick_replies:
-                quick_replies.append(option)
-    
-    return quick_replies[:3]  # Ensure max 3 replies
-
 def generate_intelligent_follow_up(mcp_response, user_query, intent):
     """Generate context-aware follow-up prompts based on MCP results"""
     products = mcp_response.get('products', [])
@@ -1045,6 +860,169 @@ def generate_intelligent_follow_up(mcp_response, user_query, intent):
         "follow_up": True,
         "follow_up_prompt": "Would you like more details about any of these products?"
     }
+################################### NEW FILES ################################
+# Replace these functions in chat_shopify.py
+
+def map_shopify_products_to_carousel(mcp_response, max_products=3):
+    """Map Shopify MCP response to unified contract product_carousel format"""
+    if not mcp_response or not mcp_response.get('products'):
+        return []
+    
+    products = mcp_response['products']
+    carousel_products = []
+    
+    for product in products[:max_products]:
+        # FIXED: Handle the actual MCP format, not Shopify variants
+        # MCP format: product has direct price, currency, etc.
+        
+        # Extract price information directly from product
+        price = product.get('price', 0)
+        price_max = product.get('price_max')
+        currency = product.get('currency', 'INR')
+        
+        # Format price properly
+        if currency == 'INR':
+            price_display = f"₹{price:,.0f}"
+            compare_price_display = f"₹{price_max:,.0f}" if price_max and price_max != price else None
+        elif currency == 'USD':
+            price_display = f"${price:.2f}"
+            compare_price_display = f"${price_max:.2f}" if price_max and price_max != price else None
+        else:
+            price_display = f"{currency} {price}"
+            compare_price_display = f"{currency} {price_max}" if price_max and price_max != price else None
+        
+        # Build carousel product with correct data
+        carousel_product = {
+            "id": product.get('id', ''),
+            "title": product.get('title', 'Unknown Product'),
+            "price": price_display,
+            "image": product.get('image', ''),
+            "handle": product.get('url', '').split('/')[-1] if product.get('url') else '',
+            "available": product.get('inStock', True)
+        }
+        
+        # Add compare_at_price if we have a price range
+        if compare_price_display:
+            carousel_product["compare_at_price"] = compare_price_display
+        
+        carousel_products.append(carousel_product)
+    
+    return carousel_products
+
+def format_products_for_llm(mcp_products):
+    """Format MCP products for LLM context with structured product data"""
+    if not mcp_products:
+        return ""
+    
+    product_data = []
+    for i, product in enumerate(mcp_products[:6]):  # Limit to 6 products
+        # FIXED: Extract data from MCP format correctly
+        price = product.get('price', 0)
+        currency = product.get('currency', 'INR')
+        
+        # Format price properly
+        if currency == 'INR':
+            price_display = f"₹{price:,.0f}"
+        elif currency == 'USD':
+            price_display = f"${price:.2f}"
+        else:
+            price_display = f"{currency} {price}"
+        
+        product_info = {
+            "id": product.get('id', f"product_{i}"),
+            "title": product.get('title', 'Unknown Product'),
+            "price": price,
+            "price_display": price_display,
+            "currency": currency,
+            "inStock": product.get('inStock', True),
+            "description": product.get('description', ''),
+            "image": product.get('image', ''),
+            "url": product.get('url', '')
+        }
+        product_data.append(product_info)
+    
+    # Create structured context for LLM
+    context_lines = [f"\n**🛍️ AVAILABLE PRODUCTS FOR RECOMMENDATION:**"]
+    
+    for i, product in enumerate(product_data):
+        # Stock status
+        stock_status = "✅ In Stock" if product['inStock'] else "❌ Out of Stock"
+        
+        context_lines.append(f"""
+        Product {i+1}:
+        - ID: {product['id']}
+        - Title: {product['title']}
+        - Price: {product['price_display']}
+        - Stock: {stock_status}
+        - Description: {product['description'][:100]}...
+        - Image: {product['image']}
+        - URL: {product['url']}""")
+    
+    context_lines.append(f"\n**IMPORTANT:** When recommending products, include them in 'product_carousel' array with exact ID, title, price format from above.")
+    
+    return "\n".join(context_lines)
+
+# REMOVE these functions as they're designed for different data format:
+# - get_shopify_primary_image() 
+# - format_shopify_price()
+
+# Replace generate_dynamic_quick_replies to be simpler
+def generate_dynamic_quick_replies(mcp_response, intent, query_type):
+    """Generate contextual quick replies from MCP context"""
+    quick_replies = []
+    
+    # Add product-specific actions if we have products
+    if mcp_response.get('products'):
+        quick_replies.extend(["Add to Cart", "See details"])
+        
+        # Add pagination option if more results available
+        pagination = mcp_response.get('pagination', {})
+        if pagination.get('hasNextPage') and len(quick_replies) < 3:
+            quick_replies.append("See more")
+    
+    # Fallback options based on intent
+    if len(quick_replies) < 2:
+        if intent in ['ProductInquiry', 'PricingInquiry']:
+            fallback_options = ["Browse products", "Get help", "Contact sales"]
+        elif intent == 'SupportRequest':
+            fallback_options = ["Email support", "Live chat", "Call us"]
+        else:
+            fallback_options = ["Help me choose", "See options", "Contact support"]
+        
+        # Add fallback options to fill up to 3 total
+        for option in fallback_options:
+            if len(quick_replies) < 3 and option not in quick_replies:
+                quick_replies.append(option)
+    
+    return quick_replies[:3]  # Ensure max 3 replies
+
+# Add debugging function to log product data transformation
+def debug_product_mapping(mcp_context, carousel_products):
+    """Debug function to log product mapping"""
+    logger.info(f"🔍 ===== PRODUCT MAPPING DEBUG =====")
+    
+    mcp_products = mcp_context.get('products', [])
+    logger.info(f"🔍 MCP Products Count: {len(mcp_products)}")
+    
+    for i, product in enumerate(mcp_products[:3]):
+        logger.info(f"🔍 MCP Product {i+1}:")
+        logger.info(f"🔍   - ID: {product.get('id')}")
+        logger.info(f"🔍   - Title: {product.get('title')}")
+        logger.info(f"🔍   - Price: {product.get('price')} {product.get('currency')}")
+        logger.info(f"🔍   - InStock: {product.get('inStock')}")
+        logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
+    
+    logger.info(f"🔍 Carousel Products Count: {len(carousel_products)}")
+    
+    for i, product in enumerate(carousel_products):
+        logger.info(f"🔍 Carousel Product {i+1}:")
+        logger.info(f"🔍   - ID: {product.get('id')}")
+        logger.info(f"🔍   - Title: {product.get('title')}")
+        logger.info(f"🔍   - Price: {product.get('price')}")
+        logger.info(f"🔍   - Available: {product.get('available')}")
+        logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
+    
+    logger.info(f"🔍 ===== PRODUCT MAPPING DEBUG END =====")
 
 
 # Enhanced /shopify/ask endpoint
@@ -1600,6 +1578,7 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         context_label = "Relevant information" if is_shopify else "Relevant website content"
         focused_prompt = f"{latest_user_query}\n\n{context_label}:\n{context}{language_instruction}"
 
+
         # Enhanced Shopify-specific instructions with MCP intelligence
         if is_shopify and mcp_context:
             shopify_instructions = "\n\nYou have access to real-time product information and store policies."
@@ -1607,6 +1586,9 @@ def shopify_ask_endpoint():  # Rename function too for clarity
             if mcp_context.get('products'):
                 # Generate intelligent product carousel from MCP data
                 carousel_products = map_shopify_products_to_carousel(mcp_context)
+                
+                # ADD DEBUG LOGGING HERE
+                debug_product_mapping(mcp_context, carousel_products)
                 
                 # Generate dynamic quick replies based on available filters
                 dynamic_quick_replies = generate_dynamic_quick_replies(
@@ -1623,40 +1605,69 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 logger.info(f"🛍️ Generated quick replies: {dynamic_quick_replies}")
                 logger.info(f"🛍️ Generated follow-up: {follow_up_data}")
                 
+                # IMPORTANT: Filter products by price if user specified budget
+                filtered_products = carousel_products
+                if search_parameters.get('price_range', {}).get('max'):
+                    max_budget = search_parameters['price_range']['max']
+                    logger.info(f"🔍 Filtering products by budget: ₹{max_budget}")
+                    
+                    filtered_products = []
+                    for product in carousel_products:
+                        # Extract numeric price from formatted string
+                        price_str = product.get('price', '0')
+                        if price_str.startswith('₹'):
+                            try:
+                                price_num = float(price_str.replace('₹', '').replace(',', ''))
+                                if price_num <= max_budget:
+                                    filtered_products.append(product)
+                                    logger.info(f"🔍 ✅ Included: {product['title']} at ₹{price_num}")
+                                else:
+                                    logger.info(f"🔍 ❌ Excluded: {product['title']} at ₹{price_num} (over budget)")
+                            except ValueError:
+                                logger.warning(f"🔍 ⚠️ Could not parse price: {price_str}")
+                                # Include anyway if we can't parse
+                                filtered_products.append(product)
+                
+                logger.info(f"🔍 Final filtered products: {len(filtered_products)}")
+                
                 shopify_instructions += f"""
 
-        🛍️ ENHANCED PRODUCT RECOMMENDATION WITH REAL MCP DATA:
+                🛍️ ENHANCED PRODUCT RECOMMENDATION WITH REAL MCP DATA:
 
-        PRODUCTS TO INCLUDE IN CAROUSEL (use exact data):
-        {json.dumps(carousel_products, indent=2)}
+                PRODUCTS TO INCLUDE IN CAROUSEL (use exact data):
+                {json.dumps(filtered_products, indent=2)}
 
-        SUGGESTED QUICK_REPLIES:
-        {json.dumps(dynamic_quick_replies)}
+                SUGGESTED QUICK_REPLIES:
+                {json.dumps(dynamic_quick_replies)}
 
-        FOLLOW-UP STRATEGY:
-        - follow_up: {follow_up_data['follow_up']}
-        - follow_up_prompt: "{follow_up_data['follow_up_prompt']}"
+                FOLLOW-UP STRATEGY:
+                - follow_up: {follow_up_data['follow_up']}
+                - follow_up_prompt: "{follow_up_data['follow_up_prompt']}"
 
-        SEARCH CONTEXT:
-        - Total products available: {mcp_context.get('pagination', {}).get('totalCount', 'unknown')}
-        - Filter options available: {len(mcp_context.get('available_filters', []))} filter groups
-        - Has more pages: {mcp_context.get('pagination', {}).get('hasNextPage', False)}
+                SEARCH CONTEXT:
+                - Total products available: {mcp_context.get('pagination', {}).get('totalCount', 'unknown')}
+                - Products matching budget: {len(filtered_products)} out of {len(carousel_products)}
+                - User budget limit: ₹{search_parameters.get('price_range', {}).get('max', 'no limit')}
+                - Filter options available: {len(mcp_context.get('available_filters', []))} filter groups
+                - Has more pages: {mcp_context.get('pagination', {}).get('hasNextPage', False)}
 
-        INSTRUCTIONS:
-        1. Use the EXACT product data above in your product_carousel response
-        2. Use the suggested quick_replies to guide user interaction
-        3. Apply the follow_up strategy for continued engagement  
-        4. If user asks for more products, mention pagination availability
-        5. Reference total count when relevant to set expectations
-        """
+                INSTRUCTIONS:
+                1. Use the EXACT product data above in your product_carousel response
+                2. ONLY show products within the user's budget if specified
+                3. Use the suggested quick_replies to guide user interaction
+                4. Apply the follow_up strategy for continued engagement  
+                5. If user asks for more products, mention pagination availability
+                6. Reference total count when relevant to set expectations
+                7. If showing expensive products, mention the budget constraint
+                """
             
             if mcp_context.get('policies'):
                 shopify_instructions += f"""
 
-        📋 STORE POLICIES AVAILABLE:
-        You have access to store policy information including:
-        {list(mcp_context['policies'].keys()) if isinstance(mcp_context.get('policies'), dict) else 'Policy data available'}
-        """
+                📋 STORE POLICIES AVAILABLE:
+                You have access to store policy information including:
+                {list(mcp_context['policies'].keys()) if isinstance(mcp_context.get('policies'), dict) else 'Policy data available'}
+                """
             
             focused_prompt += shopify_instructions
 
@@ -1748,7 +1759,69 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         if reply_json.get("follow_up"):
             logger.info(f"🔄 Response includes follow-up: {reply_json.get('follow_up_prompt')}")
 
+# Add this logging right after the LLM response is processed, around line 1650:
+
+        # Enhanced logging to debug product issues
+        if reply_json.get("product_carousel"):
+            logger.info(f"🔍 ===== LLM PRODUCT RESPONSE DEBUG =====")
+            llm_products = reply_json.get("product_carousel", [])
+            logger.info(f"🔍 LLM returned {len(llm_products)} products:")
+            
+            for i, product in enumerate(llm_products):
+                logger.info(f"🔍 LLM Product {i+1}:")
+                logger.info(f"🔍   - ID: {product.get('id')}")
+                logger.info(f"🔍   - Title: {product.get('title')}")
+                logger.info(f"🔍   - Price: {product.get('price')}")
+                logger.info(f"🔍   - Available: {product.get('available')}")
+                logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
+            
+            # Compare with original MCP data
+            mcp_products = mcp_context.get('products', [])[:3]
+            logger.info(f"🔍 Original MCP data (first 3):")
+            for i, product in enumerate(mcp_products):
+                logger.info(f"🔍 MCP Product {i+1}:")
+                logger.info(f"🔍   - ID: {product.get('id')}")
+                logger.info(f"🔍   - Title: {product.get('title')}")
+                logger.info(f"🔍   - Price: {product.get('price')} {product.get('currency')}")
+                logger.info(f"🔍   - InStock: {product.get('inStock')}")
+            
+            logger.info(f"🔍 ===== LLM PRODUCT RESPONSE DEBUG END =====")
+
+# Also add this validation after JSON parsing:
+
+        # Validate product data quality
+        if reply_json.get("product_carousel"):
+            products = reply_json["product_carousel"]
+            for i, product in enumerate(products):
+                # Check for required fields
+                required_fields = ['id', 'title', 'price']
+                missing_fields = [field for field in required_fields if not product.get(field)]
+                
+                if missing_fields:
+                    logger.warning(f"🔍 Product {i+1} missing fields: {missing_fields}")
+                    logger.warning(f"🔍 Product data: {product}")
+                
+                # Check for placeholder or generic data
+                title = product.get('title', '')
+                if any(placeholder in title.lower() for placeholder in ['unknown', 'placeholder', 'example']):
+                    logger.warning(f"🔍 Product {i+1} has placeholder title: {title}")
+                
+                # Check price format
+                price = product.get('price', '')
+                if not price or price == '$0.00' or price == '₹0':
+                    logger.warning(f"🔍 Product {i+1} has invalid price: {price}")
         
+        # Add this check to see what the LLM actually received
+        logger.info(f"🔍 LLM received prompt length: {len(focused_prompt)} characters")
+        if "PRODUCTS TO INCLUDE IN CAROUSEL" in focused_prompt:
+            # Extract the JSON section that was sent to LLM
+            start = focused_prompt.find("PRODUCTS TO INCLUDE IN CAROUSEL")
+            end = focused_prompt.find("SUGGESTED QUICK_REPLIES", start)
+            if start != -1 and end != -1:
+                products_section = focused_prompt[start:end]
+                logger.info(f"🔍 Products section sent to LLM:")
+                logger.info(f"🔍 {products_section[:500]}...")  # First 500 chars
+       
         # Extract analytic flags from response
         lang = reply_json.get("lang")
         confidence = reply_json.get("answer_confidence")
