@@ -13,8 +13,6 @@ from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
-from services.shopify_mcp_service import ShopifyMCPService
-from urllib.parse import urlparse
 
 # Import OpenAI v1.0+ style
 from openai import OpenAI
@@ -27,7 +25,6 @@ jwt_service = JWTService()
 domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
-shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
 
 # Environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -53,401 +50,203 @@ if MIXPANEL_TOKEN:
 
 # AI Prompts
 SYSTEM_PROMPT = """
-# Yuno AI Assistant - Comprehensive System Prompt
+You are **Yuno**, a warm, human-like sales assistant whose main goal is to drive leads and sales. You chat with visitors about our products, policies, or general info—always in a friendly, polite, and subtly persuasive way.
 
-You are **Yuno**, a warm, human-like sales assistant whose main goal is to drive leads, sales, and product discovery. You chat with visitors about products, policies, or general info—always in a friendly, polite, and subtly persuasive way.
-
-## Core Principles
+**Core Principles**
 
 - **Tone & Style**: Keep replies short (2–3 sentences), casual but courteous ("Hey there!", "Sure thing!"), and always use "we"/"our."
-- **Accuracy & Grounding**: Never guess. If you don't have the information, say: "Hmm, I don't have that on hand—feel free to email us at care@example.com!"
-- **Lead Focus**: If the visitor shares an email or phone, set `leadTriggered=true`. When sentiment is strongly positive, gently steer toward sharing contact details.
-- **Product Focus**: When users show buying intent, always include relevant products in `product_carousel` (up to 3 items).
-- **Interactive Experience**: Use `quick_replies` to guide conversations and `follow_up` to maintain engagement.
+- **Accuracy & Grounding**: Never guess. If you don't have the information, say:
+
+    > "Hmm, I don't have that on hand—feel free to email us at care@example.com!"
+    >
+- **Lead Focus**: If the visitor shares an email or phone, set `leadTriggered=true`. Infer the name if possible. When sentiment is strongly positive, gently steer toward sharing contact details.
+- **Follow-Up**: If the question is vague, ask one clarifying question.
 - **Compliance**: Always screen for policy, legal, or other red flags and mark them.
 
-## Key Behaviors
+**Key Behaviors**
 
-1. **Precise Confidence**: Compute a decimal confidence score between **0.00** and **1.00** based on how certain you are.
-2. **Nuanced Sentiment**: Detect positive, neutral, or negative sentiment—including sarcasm and humor.
+1. **Precise Confidence**: Compute a decimal confidence score between **0.00** and **1.00** (e.g. 0.73), based on how certain you are that your answer is correct.
+2. **Nuanced Sentiment**: Detect positive, neutral, or negative sentiment—including sarcasm and humor—and mark `user_sentiment` accordingly.
 3. **Fixed Intents**: Classify every message into one of these eight intents:
-   - `ProductInquiry` - asking about specific products, features, availability
-   - `PricingInquiry` - asking about costs, discounts, payment options
-   - `BookingInquiry` - scheduling, appointments, reservations
-   - `SupportRequest` - help with existing orders, technical issues
-   - `SmallTalk` - greetings, casual conversation, general chat
-   - `Complaint` - expressing dissatisfaction, problems, negative feedback
-   - `LeadCapture` - providing contact information, expressing strong interest
-   - `Other` - everything else that doesn't fit above categories
-
-4. **Product Recommendations**: When intent involves buying (`ProductInquiry`, `PricingInquiry`), include relevant products.
-5. **Lead Capture**: Only set `leadTriggered=true` when you've extracted a valid email or phone number.
-6. **Sales Nudging**: When sentiment is strongly positive (>0.80), subtly nudge for contact info.
-7. **Follow-up Strategy**: Use `follow_up` to maintain engagement and guide toward sales.
+    - `ProductInquiry`
+    - `PricingInquiry`
+    - `BookingInquiry`
+    - `SupportRequest`
+    - `SmallTalk`
+    - `Complaint`
+    - `LeadCapture`
+    - `Other`
+4. **Compliance Flag**: If any message contains policy/legal concerns or disallowed content, set `compliance_red_flag=true`.
+5. **Lead Capture**: Only set `leadTriggered=true` when you've extracted a valid email or phone number. Infer `lead.name` when you can. Accurately summarize visitor's goal in `lead.intent`.
+6. **Sales Nudge**: When sentiment is strongly positive (>0.80), subtly nudge for contact info ("Happy to help—could I get your email so we can send you an exclusive offer?") but only trigger the lead when you actually receive details.
+7. **Human Handoff**: If they ask to speak with a human or express frustration you can't handle, offer to loop in the team and request contact details.
+8. **Edge Cases & Chitchat**: Handle greetings, farewells, emojis, and one-word queries per your existing rules—briefly, clearly, and in our voice.
+9.  Use the full chat history for context; avoid needless repetition.
+10.  If the info is missing, do **not** guess. Politely direct the visitor to our support email. Never invent facts outside provided context.
+11. Remember YOU CANNOT CONFIRM ANY ORDER, YOU CAN JUST CREATE LEAD.
 
 ## Edge Cases Handling
 
-### Greetings & Closures
-- "Hi", "Hello!" → "Hey there—how can we help?"
-- "Bye!", "See ya", "thanks" → "Talk soon! Let us know if you need anything else."
+- Greetings & Closures
+– On "Hi", "Hello!", respond: "Hey there—how can we help?"
+– On "Bye!", "See ya", "thanks" "Ty" respond: "Talk soon! Let us know if you need anything else."
+- Small Talk & Chitchat
+– On "How's your day?", "What's up?", for example say like: "All good here! What product info can I get for you today?"
+- Vague or One-Word Queries
+– On "Pricing?", "Policies?", for example say like: "Sure—are you looking for our subscription tiers or our refund policy?"
+- Multiple Questions in One Message
+– Either answer both succinctly (for example say like - "Pricing is ₹999/mo; support hours are 9am–6pm weekdays. Anything else?") or split into two parts with a quick transition.
+- Broken/Invalid Requests
+– On gibberish or unsupported attachments, for example say like: "Hmm, I'm not quite following. Could you rephrase or drop me a note at <support email>"
+- Escalation & Human Handoff
+– On "I need to talk to someone" or clear urgency, for example say like: "I'm looping in our team—can you share your email so we can dive deeper?"
+- Negative Sentiment or Frustration
+– On "This is terrible", "I'm stuck", for example say like: "Sorry you're having trouble. Can you tell me where you got stuck so we can fix it?"
+- Repeated Queries
+– On asking the same thing twice, for example say like: "We covered that above—did that answer your question, or should I clarify further?"
+- Language Switching
+– If the user mixes languages ("Hola, pricing?"), detect the other language and continue in that language after confirmation: "I see you said 'Hola'. Would you like me to continue in Spanish?"
+- Edge-case Inputs (Emojis Only)
+– On "👍", for example say like: "Glad that helped! Anything else I can do?"
+– On "😢", for example say like: "Sorry to see that—what can I improve?"
 
-### Small Talk & Chitchat
-- "How's your day?", "What's up?" → "All good here! What product info can I get for you today?"
+════════════════  ABSOLUTE JSON-ONLY RESPONSE RULE  ════════════════
+You must reply **only** with a single JSON object that matches exactly
+one of the schemas below—no markdown, no plain text.
 
-### Vague Queries
-- "Pricing?", "Products?" → Use `quick_replies` to offer specific options
-
-### Product Inquiries
-- Always try to show relevant products in `product_carousel`
-- Use `quick_replies` for "Add to Cart", "See more", "Tell me more"
-
-### Human Handoff
-- "I need to talk to someone" → "I'm looping in our team—can you share your email so we can dive deeper?"
-
-### Language Switching
-- If user mixes languages, detect and offer to continue in that language
-
-════════════════  UNIFIED MESSAGE CONTRACT SCHEMAS  ════════════════
-
-You must reply **only** with a single JSON object that matches one of the schemas below.
-
-## 1. Simple Text Response
+### 1. Normal Answer (no lead captured)
 
 {
-  "content": "Hey there! How can we help you today?",
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "english",
-  "answer_confidence": 0.95,
-  "intent": "SmallTalk",
-  "tokens_used": 45,
-  "user_sentiment": "positive",
-  "compliance_red_flag": false,
-  "follow_up": true,
-  "follow_up_prompt": "Are you looking for anything specific today?"
+  "content":               "<short helpful response>",
+  "role":                  "yuno",
+  "leadTriggered":         false,
+  "lang":                  "english",
+  "answer_confidence":     <float 0.00–1.00>,
+  "intent":                "<one of ProductInquiry, PricingInquiry, BookingInquiry, SupportRequest, SmallTalk, Complaint, LeadCapture, Other>",
+  "tokens_used":           <integer>,
+  "user_sentiment":        "<positive|neutral|negative>",
+  "compliance_red_flag":   <true|false>,
+  "follow_up":             <true|false>,
+  "follow_up_prompt":      "<optional question or null>"
 }
 
-## 2. Product Showcase Response
+### 2. Lead Intent Captured (email or phone present)
 
 {
-  "content": "<b>Great choice!</b> Here are our top picks for skincare:",
-  "product_carousel": [
-    {
-      "id": "gid://shopify/Product/12345",
-      "title": "Premium Face Cream",
-      "price": "$29.99",
-      "compare_at_price": "$39.99",
-      "image": "https://cdn.shopify.com/s/files/products/face-cream.jpg",
-      "handle": "premium-face-cream",
-      "available": true
-    },
-    {
-      "id": "gid://shopify/Product/12346",
-      "title": "Vitamin C Serum",
-      "price": "$19.99",
-      "image": "https://cdn.shopify.com/s/files/products/vitamin-c.jpg",
-      "handle": "vitamin-c-serum",
-      "available": true
-    }
-  ],
-  "quick_replies": ["Add to Cart", "See more options", "Tell me more"],
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "english",
-  "answer_confidence": 0.88,
-  "intent": "ProductInquiry",
-  "tokens_used": 120,
-  "user_sentiment": "positive",
-  "compliance_red_flag": false,
-  "follow_up": false,
-  "follow_up_prompt": null
-}
-
-## 3. Lead Captured Response
-
-{
-  "content": "Perfect! I'll send those details to sarah@email.com right away. Our team will follow up within 24 hours!",
-  "role": "yuno",
-  "leadTriggered": true,
+  "content":               "<short helpful response>",
+  "role":                  "yuno",
+  "leadTriggered":         true,
   "lead": {
-    "name": "Sarah",
-    "email": "sarah@email.com",
-    "phone": null,
-    "intent": "Interested in premium skincare products and pricing information"
+    "name":   "<inferred name or null>",
+    "email":  "<extracted email or null>",
+    "phone":  "<extracted phone or null>",
+    "intent": "<one-sentence summary of what they want>"
   },
-  "lang": "english",
-  "answer_confidence": 0.95,
-  "intent": "LeadCapture",
-  "tokens_used": 78,
-  "user_sentiment": "positive",
-  "compliance_red_flag": false,
-  "follow_up": true,
-  "follow_up_prompt": "Is there anything else I can help you with while you wait?"
+  "lang":                  "hindi",
+  "answer_confidence":     <float 0.00–1.00>,
+  "intent":                "<one of ProductInquiry, PricingInquiry, BookingInquiry, SupportRequest, SmallTalk, Complaint, LeadCapture, Other>",
+  "tokens_used":           <integer>,
+  "user_sentiment":        "<positive|neutral|negative>",
+  "compliance_red_flag":   <true|false>,
+  "follow_up":             <true|false>,
+  "follow_up_prompt":      "<optional question or null>"
 }
 
-## 4. Quick Replies + Follow-up Response
+### 3. Cannot Answer (info missing)
 
 {
-  "content": "What type of skin concerns are you looking to address?",
-  "quick_replies": ["Anti-aging", "Acne treatment", "Dry skin", "Sensitive skin"],
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "english",
-  "answer_confidence": 0.90,
-  "intent": "ProductInquiry",
-  "tokens_used": 55,
-  "user_sentiment": "neutral",
-  "compliance_red_flag": false,
-  "follow_up": true,
-  "follow_up_prompt": "I can recommend the perfect products once I know your specific needs!"
+  "content":               "Hmm, I don't have that on hand—feel free to email us at care@example.com!",
+  "role":                  "yuno",
+  "leadTriggered":         false,
+  "lang":                  "spanish",
+  "answer_confidence":     0.00,
+  "intent":                "Other",
+  "tokens_used":           <integer>,
+  "user_sentiment":        "neutral",
+  "compliance_red_flag":   <true|false>,
+  "follow_up":             false,
+  "follow_up_prompt":      null
 }
 
-## 5. Rich Content with HTML
-
-{
-  "content": "Here's what makes our products special:<br><br><b>Key Benefits:</b><ul><li>100% organic ingredients</li><li>Dermatologist tested</li><li>30-day money-back guarantee</li></ul><br>Questions about any of these?",
-  "quick_replies": ["Tell me more", "See pricing", "Contact support"],
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "english",
-  "answer_confidence": 0.92,
-  "intent": "ProductInquiry",
-  "tokens_used": 95,
-  "user_sentiment": "positive",
-  "compliance_red_flag": false,
-  "follow_up": false,
-  "follow_up_prompt": null
-}
-
-## 6. Cannot Answer Response
-
-{
-  "content": "Hmm, I don't have that specific information on hand. Feel free to email us at care@example.com for detailed specs!",
-  "quick_replies": ["Contact support", "See other products", "Keep browsing"],
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "english",
-  "answer_confidence": 0.00,
-  "intent": "Other",
-  "tokens_used": 67,
-  "user_sentiment": "neutral",
-  "compliance_red_flag": false,
-  "follow_up": true,
-  "follow_up_prompt": "Is there anything else I can help you find?"
-}
-
-## 7. Pricing Response with Products
-
-{
-  "content": "Our <b>starter bundle</b> is just $49.99 - perfect for trying our bestsellers!",
-  "product_carousel": [
-    {
-      "id": "bundle-001",
-      "title": "Starter Skincare Bundle",
-      "price": "$49.99",
-      "compare_at_price": "$75.00",
-      "image": "https://cdn.shopify.com/s/files/products/starter-bundle.jpg",
-      "handle": "starter-bundle",
-      "available": true
-    }
-  ],
-  "quick_replies": ["Add to Cart", "See full catalog", "Payment options"],
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "english",
-  "answer_confidence": 0.95,
-  "intent": "PricingInquiry",
-  "tokens_used": 88,
-  "user_sentiment": "positive",
-  "compliance_red_flag": false,
-  "follow_up": true,
-  "follow_up_prompt": "Would you like me to walk you through what's included in the bundle?"
-}
-
-## 8. Support Request Response
-
-{
-  "content": "Sorry you're having trouble! Let me connect you with our support team who can help resolve this quickly.",
-  "quick_replies": ["Email support", "Live chat", "Call us"],
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "english",
-  "answer_confidence": 0.85,
-  "intent": "SupportRequest",
-  "tokens_used": 62,
-  "user_sentiment": "negative",
-  "compliance_red_flag": false,
-  "follow_up": true,
-  "follow_up_prompt": "Can you share your email so our team can prioritize your case?"
-}
-
-## 9. Multilingual Response
-
-{
-  "content": "¡Hola! Me da mucho gusto ayudarte. ¿Qué productos te interesan hoy?",
-  "quick_replies": ["Cuidado de la piel", "Suplementos", "Ver todo"],
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "spanish",
-  "answer_confidence": 0.90,
-  "intent": "SmallTalk",
-  "tokens_used": 72,
-  "user_sentiment": "positive",
-  "compliance_red_flag": false,
-  "follow_up": false,
-  "follow_up_prompt": null
-}
-
-## 10. Out of Stock Response
-
-{
-  "content": "That item is currently out of stock, but here are some great alternatives:",
-  "product_carousel": [
-    {
-      "id": "alt-001",
-      "title": "Similar Premium Cream",
-      "price": "$25.99",
-      "image": "https://cdn.shopify.com/s/files/products/alt-cream.jpg",
-      "handle": "similar-cream",
-      "available": true
-    },
-    {
-      "id": "alt-002",
-      "title": "Deluxe Face Moisturizer",
-      "price": "$32.99",
-      "compare_at_price": "$42.99",
-      "image": "https://cdn.shopify.com/s/files/products/deluxe-moisturizer.jpg",
-      "handle": "deluxe-moisturizer",
-      "available": false
-    }
-  ],
-  "quick_replies": ["Notify when available", "See alternatives", "Browse catalog"],
-  "role": "yuno",
-  "leadTriggered": false,
-  "lang": "english",
-  "answer_confidence": 0.80,
-  "intent": "ProductInquiry",
-  "tokens_used": 98,
-  "user_sentiment": "neutral",
-  "compliance_red_flag": false,
-  "follow_up": true,
-  "follow_up_prompt": "Would you like me to notify you when the original item is back in stock?"
-}
-
-## Required Field Guidelines
-
-### Always Include These Fields:
-- `content` (string) - Main response text (supports HTML: `<b>`, `<i>`, `<u>`, `<br>`, `<ul>`, `<li>`, `<a>`)
-- `role` (string) - Always "yuno"
-- `leadTriggered` (boolean) - true only when email/phone extracted
-- `lang` (string) - detected language ("english", "spanish", "hindi", etc.)
-- `answer_confidence` (float) - 0.00 to 1.00
-- `intent` (string) - one of the 8 defined intents
-- `tokens_used` (integer) - estimated token count
-- `user_sentiment` (string) - "positive", "neutral", or "negative"
-- `compliance_red_flag` (boolean) - true if concerning content detected
-- `follow_up` (boolean) - whether to send follow-up message
-- `follow_up_prompt` (string|null) - follow-up message or null
-
-### Optional Enhancement Fields:
-- `product_carousel` (array) - up to 3 products for buying intent
-- `quick_replies` (array) - 1-3 action buttons
-- `lead` (object) - only when `leadTriggered=true`
-
-### Product Carousel Object Structure:
-{
-  "id": "required - product identifier for add to cart",
-  "title": "required - product name",
-  "price": "required - display price",
-  "compare_at_price": "optional - strikethrough price",
-  "image": "required - product image URL",
-  "handle": "optional - product slug",
-  "available": "optional - defaults to true"
-}
-
-### Lead Object Structure (when leadTriggered=true):
-{
-  "name": "inferred name or null",
-  "email": "extracted email or null",
-  "phone": "extracted phone or null",
-  "intent": "one-sentence summary of what they want"
-}
-
-## Strategy Guidelines
-
-1. **Product Intent Detection**: If user mentions products, pricing, buying → include `product_carousel`
-2. **Engagement Strategy**: Use `quick_replies` to guide conversation flow
-3. **Follow-up Logic**: Set `follow_up=true` for vague queries or to maintain engagement
-4. **Lead Qualification**: Only trigger leads when you have actual contact info
-5. **Confidence Scoring**: Be honest about certainty - use 0.00 when guessing
-6. **Sentiment Analysis**: Consider context, sarcasm, and emotional undertones
-7. **Language Detection**: Respond in the language the user initiated
-8. **HTML Usage**: Use sparingly for emphasis and structure, not decoration
-
-## Important Notes
-
-- **No Additional Fields**: Include only the fields shown in schemas above
-- **No Free Text**: Respond with exactly one JSON object, no markdown or explanations
-- **Product Limits**: Typically show 1-3 products, avoid overwhelming users
-- **Quick Reply Limits**: Use 1-3 options, keep text short
-- **Error Handling**: If uncertain, admit it and offer alternative help
-- **Consistency**: Maintain Yuno's friendly, helpful personality throughout
-
-Remember: Your goal is to guide users toward products, capture leads, and provide excellent customer experience through the enhanced interactive features!
+IMPORTANT
+---------
+* Always include every key shown in the chosen schema.
+* Do **not** output any additional keys or free text.
+* Respond with **exactly one** JSON object.
 """
 
+REWRITER_PROMPT = """
+You are an assistant that rewrites a user's query using recent chat history and detects the language.
+
+Your goals:
+1. Combine the current user message and past conversation into a clear, standalone query in ENGLISH
+2. Detect the original language of the user's latest message  
+3. Return a JSON response with both pieces of information
+
+Query Rewriting Guidelines:
+- Create a complete, standalone query that incorporates relevant context from chat history
+- The rewritten query should be optimized for RAG-based vector search
+- Use complete, meaningful language that captures the user's intent
+- If the latest message is unrelated to previous conversation, just rewrite the latest message properly
+- Do not mention the chat history explicitly in the rewritten query
+
+Language Detection:
+- Detect the language of the user's LATEST message only
+- Use these language codes: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
+- For other languages, use the full language name in lowercase
+- If conversational (hi, thanks, bye), still detect the language
+- If language cannot be determined, use "unknown"
+
+Examples:
+- User message: "¿Cuál es tu precio?" 
+- Response: {"rewritten_prompt": "What is your pricing?", "ques_lang": "spanish"}
+
+- Previous: "Tell me about your services?" / Assistant: "We offer MBA, BBA, MTech" / User: "Wow, tell me about second one?"
+- Response: {"rewritten_prompt": "Tell me more about your BBA services", "ques_lang": "english"}
+
+- User message: "आपकी सेवाएं क्या हैं?"
+- Response: {"rewritten_prompt": "What are your services?", "ques_lang": "hindi"}
+
+Always respond with valid JSON only.
+
+Chat History:
+{history}
+
+User's Latest Message:
+{latest}
+
+Sample JSON Response:
+{"rewritten_prompt": "What is your pricing?", "ques_lang": "spanish"}
+"""
 
 SYSTEM_PROMPT_2 = """
-You must respond with ONLY valid JSON that supports the unified message contract.
-
-REQUIRED RESPONSE FORMAT with optional enhancements:
+You cannot confirm any order, your goal is to increase the leads.
+Remember You Just have to reply ONLY IN JSON, refer below for reference -
 
 {
-  "content": "<helpful response with optional HTML: <b>, <i>, <u>, <br>, <ul>, <li>, <a>>",
-  "role": "yuno",
-  "leadTriggered": <true|false>,
+  "content":               "<short helpful response>",
+  "role":                  "yuno",
+  "leadTriggered":         <true|false>,
+
   "lead": {
-    "name": "<inferred or null>",
-    "email": "<extracted or null>", 
-    "phone": "<extracted or null>",
-    "intent": "<brief summary>"
+    "name":   "<inferred or null>",
+    "email":  "<extracted or null>",
+    "phone":  "<extracted or null>",
+    "intent": "<brief summary of what the visitor wants>"
   },
-  "product_carousel": [
-    {
-      "id": "<product_id>",
-      "title": "<product_name>",
-      "price": "<formatted_price>",
-      "compare_at_price": "<optional_strikethrough>",
-      "image": "<product_image_url>",
-      "handle": "<product_slug>",
-      "available": <true|false>
-    }
-  ],
-  "quick_replies": ["Option 1", "Option 2", "Option 3"],
-  "follow_up": <true|false>,
-  "follow_up_prompt": "<prompt or null>",
-  "lang": "<detected_language>",
-  "answer_confidence": <0.0-1.0>,
-  "intent": "<ProductInquiry|PricingInquiry|etc>",
-  "tokens_used": <integer>,
-  "user_sentiment": "<positive|neutral|negative>",
-  "compliance_red_flag": <true|false>
+
+  "lang":                  "hindi",
+  "answer_confidence":      <float 0-1>,
+  "intent":                "<label>",
+  "tokens_used":            <integer>,
+  "follow_up":     <true|false>,
+  "follow_up_prompt":        "<prompt or null>",
+  "user_sentiment":         "<positive|neutral|negative>",
+  "compliance_red_flag":     <true|false>
 }
 
-PRODUCT CAROUSEL RULES:
-- Include when user shows buying intent (ProductInquiry, PricingInquiry)
-- Use products from MCP context when available
-- Max 3 products typically
-- Include id, title, price as minimum required fields
-
-QUICK REPLIES RULES:
-- 1-3 options max
-- Use for common actions: "Add to Cart", "See more", "Tell me more"
-- Guide conversation flow
-
-ONLY output valid JSON. No markdown, no explanations.
+ONLY JSON, Do not output anything else.
 """
-
 
 # Utility Functions
 def get_embedding(text: str) -> List[float]:
@@ -579,7 +378,8 @@ def insert_lead(lead_data):
 
 def rewrite_query_with_context_and_language(history: List[dict], latest: str) -> dict:
     """
-    Enhanced query rewriter with better intent detection
+    Rewrite user query with chat history context and detect language
+    Returns: {"rewritten_prompt": str, "ques_lang": str}
     """
     try:
         chat_log = "\n".join([
@@ -587,190 +387,33 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
             for m in history
         ])
 
-        # FIXED PROMPT with better examples and clearer instructions
-        enhanced_prompt = f"""
-        You are a JSON-only query analysis service. Analyze the user's query and determine intent, language, and data routing needs.
-
-        CRITICAL RULES:
-        1. Focus on the ACTUAL user intent, not assumed context
-        2. Product questions = product_search (even if asking "do you have", "show me", "what are")
-        3. Only classify as order_status if explicitly asking about existing orders or tracking
-        4. Rewrite queries to be clearer but keep the original intent
-
-        Query Types & Examples:
-
-        **product_search** (USE THIS FOR):
-        - "Do you have trimmers under 2000?" → product_search
-        - "Show me beard trimmers" → product_search  
-        - "What trimmers are available?" → product_search
-        - "Any good trimmers for sale?" → product_search
-        - "I need a trimmer" → product_search
-        - "trimmer prices" → product_search
-
-        **policy_question** (USE THIS FOR):
-        - "What is your return policy?" → policy_question
-        - "Shipping information" → policy_question
-        - "Do you offer warranty?" → policy_question
-
-        **order_status** (ONLY USE FOR):
-        - "Where is my order?" → order_status
-        - "Track my order #123" → order_status  
-        - "Order delivery status" → order_status
-        - "When will my order arrive?" → order_status
-
-        **company_info** (USE THIS FOR):
-        - "About your company" → company_info
-        - "Contact information" → company_info
-        - "Who are you?" → company_info
-
-        **general_chat** (USE THIS FOR):
-        - "Hi", "Hello", "Thanks" → general_chat
-        - Unclear or ambiguous queries → general_chat
-
-        ROUTING RULES:
-        - product_search → needs_mcp: true, needs_embeddings: false
-        - policy_question → needs_mcp: true, needs_embeddings: false  
-        - order_status → needs_mcp: true, needs_embeddings: false
-        - company_info → needs_mcp: false, needs_embeddings: true
-        - general_chat → needs_mcp: false, needs_embeddings: true
-
-        For product_search, extract these parameters:
-        - product_features: ["trimmer", "beard", "electric"] 
-        - price_range: {{"max": 2000}} if mentioned
-        - category: "trimmer" if identifiable
-
-        Language Detection:
-        Detect the user's LATEST message language: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
-
-        Chat History:
-        {chat_log}
-
-        User's Latest Message:
-        {latest}
-
-        ANALYZE THE QUERY CAREFULLY. Respond with valid JSON only:
-
-        {{
-            "rewritten_prompt": "clear English version of user query",
-            "ques_lang": "detected_language", 
-            "query_type": "one_of_five_types",
-            "needs_mcp": true_or_false,
-            "needs_embeddings": true_or_false,
-            "search_parameters": {{
-                "product_features": ["feature1", "feature2"],
-                "price_range": {{"max": 2000}},
-                "category": "product_category"
-            }}
-        }}
-        """
+        prompt = REWRITER_PROMPT.format(history=chat_log, latest=latest)
 
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini-2024-07-18",
-            messages=[
-                {
-                    "role": "system", 
-                    "content": "You are a precise query classifier. Focus on the user's actual intent, not assumed context. Product questions should always be classified as product_search."
-                },
-                {
-                    "role": "user", 
-                    "content": enhanced_prompt
-                }
-            ],
-            temperature=0.1  # Lower temperature for more consistent classification
+            model="gpt-4.1-nano-2025-04-14",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5
         )
 
         result_text = response.choices[0].message.content.strip()
         
-        # Extract JSON
+        # Extract JSON from response (in case of extra text)
+        import re
         match = re.search(r'\{.*\}', result_text, re.DOTALL)
         if match:
-            try:
-                result_json = json.loads(match.group(0))
-                
-                # Log the classification for debugging
-                logger.info(f"🔍 Query Classification:")
-                logger.info(f"🔍   Original: '{latest}'")
-                logger.info(f"🔍   Rewritten: '{result_json.get('rewritten_prompt', latest)}'")
-                logger.info(f"🔍   Type: {result_json.get('query_type', 'unknown')}")
-                logger.info(f"🔍   Language: {result_json.get('ques_lang', 'unknown')}")
-                logger.info(f"🔍   Needs MCP: {result_json.get('needs_mcp', False)}")
-                
-                return {
-                    "rewritten_prompt": result_json.get("rewritten_prompt", latest),
-                    "ques_lang": result_json.get("ques_lang", "english"),
-                    "query_type": result_json.get("query_type", "general_chat"),
-                    "needs_mcp": result_json.get("needs_mcp", False),
-                    "needs_embeddings": result_json.get("needs_embeddings", True),
-                    "search_parameters": result_json.get("search_parameters", {})
-                }
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse rewriter JSON: {e}")
-                logger.error(f"Raw response: {result_text}")
-                # Fallback with manual classification
-                return classify_query_manually(latest)
+            result_json = json.loads(match.group(0))
+            return {
+                "rewritten_prompt": result_json.get("rewritten_prompt", latest),
+                "ques_lang": result_json.get("ques_lang", "english")
+            }
         else:
-            logger.error("No JSON found in rewriter response")
-            return classify_query_manually(latest)
+            # Fallback if JSON parsing fails
+            return {"rewritten_prompt": latest, "ques_lang": "english"}
             
     except Exception as e:
-        logger.warning("Enhanced query rewrite failed: %s", str(e))
-        return classify_query_manually(latest)
-
-def classify_query_manually(query: str) -> dict:
-    """Manual fallback classification for when AI fails"""
-    query_lower = query.lower()
-    
-    # Simple keyword-based classification
-    if any(word in query_lower for word in ['trimmer', 'product', 'buy', 'price', 'cost', 'have', 'sell', 'available']):
-        query_type = "product_search"
-        needs_mcp = True
-        needs_embeddings = False
-        
-        # Extract price if mentioned
-        search_params = {}
-        price_match = re.search(r'under\s+(\d+)', query_lower)
-        if price_match:
-            search_params["price_range"] = {"max": int(price_match.group(1))}
-        
-        # Extract product features
-        features = []
-        if 'trimmer' in query_lower:
-            features.append('trimmer')
-        if 'beard' in query_lower:
-            features.append('beard')
-        
-        if features:
-            search_params["product_features"] = features
-            search_params["category"] = features[0]  # Use first feature as category
-        
-    elif any(word in query_lower for word in ['order', 'track', 'delivery', 'shipped']):
-        query_type = "order_status"
-        needs_mcp = True
-        needs_embeddings = False
-        search_params = {}
-        
-    elif any(word in query_lower for word in ['policy', 'return', 'shipping', 'warranty']):
-        query_type = "policy_question"
-        needs_mcp = True
-        needs_embeddings = False
-        search_params = {}
-        
-    else:
-        query_type = "general_chat"
-        needs_mcp = False
-        needs_embeddings = True
-        search_params = {}
-    
-    logger.info(f"🔍 Manual Classification: '{query}' → {query_type}")
-    
-    return {
-        "rewritten_prompt": query,  # Keep original
-        "ques_lang": "english",
-        "query_type": query_type,
-        "needs_mcp": needs_mcp,
-        "needs_embeddings": needs_embeddings,
-        "search_parameters": search_params
-    }
+        logger.warning("Query rewrite with language detection failed: %s", str(e))
+        # Fallback to original query and default language
+        return {"rewritten_prompt": latest, "ques_lang": "english"}
 
 # JWT Token Authentication Decorator
 def require_widget_token(f):
@@ -805,247 +448,6 @@ def require_widget_token(f):
         return f(*args, **kwargs)
     
     return decorated_function
-
-def format_products_for_llm(mcp_products):
-    """Format MCP products for LLM context with structured product data"""
-    if not mcp_products:
-        return ""
-    
-    product_data = []
-    for i, product in enumerate(mcp_products[:6]):  # Limit to 6 products
-        # Extract core product data
-        product_info = {
-            "id": product.get('id', f"product_{i}"),
-            "title": product.get('title', 'Unknown Product'),
-            "price": product.get('price', 0),
-            "currency": product.get('currency', ''),
-            "inStock": product.get('inStock', True),
-            "description": product.get('description', ''),
-            "image": product.get('image', ''),
-            "url": product.get('url', '')
-        }
-        product_data.append(product_info)
-    
-    # Create structured context for LLM
-    context_lines = [f"\n**🛍️ AVAILABLE PRODUCTS FOR RECOMMENDATION:**"]
-    
-    for i, product in enumerate(product_data):
-        currency = product['currency']
-        price = product['price']
-        
-        # Format price
-        if currency == 'INR':
-            price_display = f"₹{price:,.0f}"
-        elif currency == 'USD':
-            price_display = f"${price:,.2f}"
-        else:
-            price_display = f"{currency} {price:,.2f}"
-        
-        # Stock status
-        stock_status = "✅ In Stock" if product['inStock'] else "❌ Out of Stock"
-        
-        context_lines.append(f"""
-        Product {i+1}:
-        - ID: {product['id']}
-        - Title: {product['title']}
-        - Price: {price_display}
-        - Stock: {stock_status}
-        - Description: {product['description'][:100]}...
-        - Image: {product['image']}"""
-        )
-    
-    context_lines.append(f"\n**IMPORTANT:** When recommending products, include them in 'product_carousel' array with exact ID, title, price format from above.")
-    
-    return "\n".join(context_lines)
-
-def map_shopify_products_to_carousel(mcp_response, max_products=3):
-    """Map Shopify MCP response to unified contract product_carousel format"""
-    if not mcp_response or not mcp_response.get('products'):
-        return []
-    
-    products = mcp_response['products']
-    carousel_products = []
-    
-    for product in products[:max_products]:
-        # Handle Shopify variants for pricing (use first available variant)
-        variants = product.get('variants', [])
-        first_variant = variants[0] if variants else {}
-        
-        # Extract price information
-        price_obj = first_variant.get('price', {})
-        price_display = format_shopify_price(price_obj)
-        
-        # Build carousel product
-        carousel_product = {
-            "id": first_variant.get('id') or product.get('id', ''),
-            "title": product.get('title', 'Unknown Product'),
-            "price": price_display,
-            "image": get_shopify_primary_image(product.get('images', [])),
-            "handle": product.get('handle', ''),
-            "available": first_variant.get('available', True)
-        }
-        
-        # Add compare_at_price if variant has it
-        compare_price_obj = first_variant.get('compareAtPrice')
-        if compare_price_obj:
-            carousel_product["compare_at_price"] = format_shopify_price(compare_price_obj)
-        
-        carousel_products.append(carousel_product)
-    
-    return carousel_products
-
-def get_shopify_primary_image(images):
-    """Get the primary product image URL from Shopify images array"""
-    if not images:
-        return ""
-    
-    # Handle different image structures
-    first_image = images[0]
-    if isinstance(first_image, dict):
-        return first_image.get('url', first_image.get('src', ''))
-    return str(first_image)
-
-def format_shopify_price(price_obj):
-    """Format Shopify price object to display string"""
-    if not price_obj:
-        return "Price not available"
-    
-    # Handle different price formats from Shopify
-    if isinstance(price_obj, dict):
-        amount = price_obj.get('amount', 0)
-        currency = price_obj.get('currencyCode', 'USD')
-    elif isinstance(price_obj, (int, float)):
-        amount = float(price_obj)
-        currency = 'USD'  # Default fallback
-    else:
-        return str(price_obj)  # Fallback to string representation
-    
-    # Format based on currency
-    try:
-        amount = float(amount)
-        if currency == 'USD':
-            return f"${amount:.2f}"
-        elif currency == 'EUR':
-            return f"€{amount:.2f}"
-        elif currency == 'GBP':
-            return f"£{amount:.2f}"
-        elif currency == 'INR':
-            return f"₹{amount:.0f}"
-        elif currency == 'CAD':
-            return f"C${amount:.2f}"
-        else:
-            return f"{currency} {amount:.2f}"
-    except (ValueError, TypeError):
-        return f"{currency} {amount}"
-
-def generate_dynamic_quick_replies(mcp_response, intent, query_type):
-    """Generate contextual quick replies from MCP available_filters and context"""
-    quick_replies = []
-    
-    # Add product-specific actions if we have products
-    if mcp_response.get('products'):
-        quick_replies.extend(["Add to Cart", "See details"])
-        
-        # Add filter-based options from available_filters
-        available_filters = mcp_response.get('available_filters', [])
-        
-        # Prioritize useful filters for quick replies
-        priority_filters = {
-            'productType': 'type',
-            'vendor': 'brand', 
-            'variantOption': 'options',
-            'price': 'price range'
-        }
-        
-        for filter_group in available_filters:
-            filter_type = filter_group.get('type', '')
-            if filter_type in priority_filters and len(quick_replies) < 3:
-                # Get first few filter values
-                values = filter_group.get('values', [])[:2]
-                for value in values:
-                    if len(quick_replies) < 3:
-                        label = value.get('label', str(value))
-                        # Keep labels short for UI
-                        if len(label) > 15:
-                            label = label[:12] + "..."
-                        quick_replies.append(f"Show {label}")
-    
-    # Add pagination option if more results available
-    pagination = mcp_response.get('pagination', {})
-    if pagination.get('hasNextPage') and len(quick_replies) < 3:
-        quick_replies.append("See more")
-    
-    # Fallback options based on intent if we don't have enough
-    if len(quick_replies) < 2:
-        if intent in ['ProductInquiry', 'PricingInquiry']:
-            fallback_options = ["Browse products", "Get help", "Contact sales"]
-        elif intent == 'SupportRequest':
-            fallback_options = ["Email support", "Live chat", "Call us"]
-        else:
-            fallback_options = ["Help me choose", "See options", "Contact support"]
-        
-        # Add fallback options to fill up to 3 total
-        for option in fallback_options:
-            if len(quick_replies) < 3 and option not in quick_replies:
-                quick_replies.append(option)
-    
-    return quick_replies[:3]  # Ensure max 3 replies
-
-def generate_intelligent_follow_up(mcp_response, user_query, intent):
-    """Generate context-aware follow-up prompts based on MCP results"""
-    products = mcp_response.get('products', [])
-    pagination = mcp_response.get('pagination', {})
-    available_filters = mcp_response.get('available_filters', [])
-    
-    # No products found
-    if not products:
-        return {
-            "follow_up": True,
-            "follow_up_prompt": "I couldn't find exactly what you're looking for. Could you describe what you need in more detail?"
-        }
-    
-    # Products found but many more available
-    total_count = pagination.get('totalCount', 0)
-    if pagination.get('hasNextPage') and total_count > 10:
-        return {
-            "follow_up": True, 
-            "follow_up_prompt": f"I found {len(products)} products from {total_count} total. Would you like to see more or filter these results?"
-        }
-    
-    # Perfect amount of products - ask for refinement
-    if len(products) <= 3:
-        return {
-            "follow_up": True,
-            "follow_up_prompt": "Do any of these catch your eye, or would you like me to find something more specific?"
-        }
-    
-    # Many products - suggest filtering based on available filters
-    if len(products) > 3 and available_filters:
-        filter_suggestions = []
-        for filter_group in available_filters[:2]:
-            filter_type = filter_group.get('type', '')
-            if filter_type == 'productType':
-                filter_suggestions.append("product type")
-            elif filter_type == 'vendor':
-                filter_suggestions.append("brand")
-            elif filter_type == 'variantOption':
-                filter_suggestions.append("style or color")
-            elif filter_type == 'price':
-                filter_suggestions.append("price range")
-        
-        if filter_suggestions:
-            suggestion_text = " or ".join(filter_suggestions[:2])
-            return {
-                "follow_up": True,
-                "follow_up_prompt": f"I found several great options! Would you like me to filter by {suggestion_text}?"
-            }
-    
-    # Default follow-up for other cases
-    return {
-        "follow_up": True,
-        "follow_up_prompt": "Would you like more details about any of these products?"
-    }
-
 
 # Enhanced /ask endpoint
 @chat_bp.route('/ask', methods=['POST', 'OPTIONS'])
@@ -1172,26 +574,11 @@ def advanced_ask_endpoint():
             })
         
 
-        # NEW: Rewrite query with context, detect language, and determine routing
+        # NEW: Rewrite query with context and detect language
         rewrite_result = rewrite_query_with_context_and_language(recent_history, latest_user_query)
         rewritten_query = rewrite_result["rewritten_prompt"]
         detected_language = rewrite_result["ques_lang"]
-        query_type = rewrite_result.get("query_type", "general_chat")
-        needs_mcp = rewrite_result.get("needs_mcp", False)
-        needs_embeddings = rewrite_result.get("needs_embeddings", True)
-        search_parameters = rewrite_result.get("search_parameters", {})
 
-        # Check if this is a Shopify store
-        is_shopify = False
-        shopify_domain = None
-        try:
-            # Get site configuration
-            site_info = site_model.get_site_by_id(site_id)
-            if site_info and site_info.get('custom_config'):
-                is_shopify = site_info['custom_config'].get('is_shopify', False)
-                shopify_domain = site_info['custom_config'].get('shopify_domain')
-        except Exception as e:
-            logger.warning(f"Could not fetch site config for {site_id}: {e}")
         
         if mp:
             mp.track(distinct_id, "query_rewritten", {
@@ -1223,272 +610,10 @@ def advanced_ask_endpoint():
                 "embedding_preview": str(embedding[:5])
             })
         
-        # Initialize context holders
-        matches = []
-        mcp_context = {}
-
-        # Perform semantic search if needed
-        if needs_embeddings:
-            matches = semantic_search(embedding, site_id)
-            sentry_sdk.set_extra("vector_search_results", matches[:3])
-            
-            if mp:
-                mp.track(distinct_id, "vector_search_performed", {
-                    "site_id": site_id,
-                    "session_id": session_id,
-                    "match_count": len(matches),
-                    "top_matches": matches[:2]
-                })
-        else:
-            logger.info(f"Skipping embeddings search for query type: {query_type}")
-
-
-
-        # ===== ENHANCED MCP INTEGRATION WITH DETAILED LOGGING =====
-        if is_shopify and needs_mcp and shopify_domain:
-            logger.info("🛍️ ===== SHOPIFY MCP INTEGRATION START =====")
-            logger.info(f"🛍️ Shopify store detected: {shopify_domain}")
-            logger.info(f"🛍️ Query type: {query_type}")
-            logger.info(f"🛍️ Original user query: '{latest_user_query}'")
-            logger.info(f"🛍️ Rewritten query: '{rewritten_query}'")
-            logger.info(f"🛍️ Search parameters: {json.dumps(search_parameters, indent=2)}")
-            logger.info(f"🛍️ Needs embeddings: {needs_embeddings}")
-            logger.info(f"🛍️ User language: {detected_language}")
-            
-            try:
-                logger.info(f"🛍️ Attempting MCP connection...")
-                
-                # Ensure domain format is correct for MCP
-                mcp_domain = shopify_domain
-                original_domain = mcp_domain
-                
-                # Log domain processing
-                logger.info(f"🛍️ Original domain from config: '{original_domain}'")
-                
-                # DON'T convert to .myshopify.com - use as-is for custom domains
-                logger.info(f"🛍️ Using domain as-is for MCP: '{mcp_domain}'")
-                logger.info(f"🛍️ Expected MCP URL: https://{mcp_domain}/api/mcp")
-                
-                # Connect to MCP
-                logger.info(f"🛍️ Connecting to MCP server...")
-                shopify_mcp_service.connect_sync(mcp_domain)
-                logger.info(f"🛍️ MCP connection established")
-                
-                if query_type == 'product_search':
-                    logger.info(f"🛍️ ===== PRODUCT SEARCH FLOW =====")
-                    logger.info(f"🛍️ Processing product search request...")
-                    logger.info(f"🛍️ Search query: '{rewritten_query}'")
-                    
-                    # Build context from search parameters with detailed logging
-                    context_parts = []
-                    logger.info(f"🛍️ Building search context...")
-                    
-                    if search_parameters.get('product_features'):
-                        features = search_parameters['product_features']
-                        context_part = f"Looking for {', '.join(features)}"
-                        context_parts.append(context_part)
-                        logger.info(f"🛍️ Added features to context: {features}")
-                    
-                    if search_parameters.get('price_range', {}).get('max'):
-                        max_price = search_parameters['price_range']['max']
-                        context_part = f"Budget up to {max_price}"
-                        context_parts.append(context_part)
-                        logger.info(f"🛍️ Added price limit to context: {max_price}")
-                    
-                    if search_parameters.get('category'):
-                        category = search_parameters['category']
-                        context_parts.append(f"Category: {category}")
-                        logger.info(f"🛍️ Added category to context: {category}")
-                    
-                    context = ". ".join(context_parts) if context_parts else ""
-                    logger.info(f"🛍️ Final search context: '{context}'")
-                    
-                    # Log the MCP call parameters
-                    logger.info(f"🛍️ Calling MCP search_products_sync with:")
-                    logger.info(f"🛍️   - query: '{rewritten_query}'")
-                    logger.info(f"🛍️   - search_parameters: {search_parameters}")
-                    logger.info(f"🛍️   - context: '{context}'")
-                    
-                    # Make the MCP call
-                    logger.info(f"🛍️ Making MCP product search call...")
-                    mcp_response = shopify_mcp_service.search_products_sync(
-                        rewritten_query,
-                        search_parameters,
-                        context=context
-                    )
-                    logger.info(f"🛍️ MCP product search call completed")
-                    
-                    # Log the response in detail
-                    logger.info(f"🛍️ MCP Response Analysis:")
-                    logger.info(f"🛍️   - Has error: {mcp_response.get('error') is not None}")
-                    logger.info(f"🛍️   - Error: {mcp_response.get('error')}")
-                    logger.info(f"🛍️   - Products count: {len(mcp_response.get('products', []))}")
-                    logger.info(f"🛍️   - Has pagination: {bool(mcp_response.get('pagination'))}")
-                    logger.info(f"🛍️   - Has filters: {bool(mcp_response.get('filters'))}")
-                    
-                    # Log first few products for debugging
-                    products = mcp_response.get('products', [])
-                    if products:
-                        logger.info(f"🛍️ First {min(3, len(products))} products:")
-                        for i, product in enumerate(products[:3]):
-                            title = product.get('title', 'No title')
-                            price = product.get('price', 'No price')
-                            currency = product.get('currency', '')
-                            in_stock = product.get('inStock', 'Unknown')
-                            logger.info(f"🛍️   {i+1}. '{title}' - {currency} {price} (Stock: {in_stock})")
-                    
-                    if mcp_response.get('error'):
-                        logger.warning(f"🛍️ MCP product search failed: {mcp_response['error']}")
-                        logger.info(f"🛍️ Falling back to embeddings search...")
-                        
-                        # Fallback to embeddings if MCP fails
-                        if not matches:
-                            logger.info(f"🛍️ No embeddings matches available, performing semantic search...")
-                            matches = semantic_search(embedding, site_id)
-                            logger.info(f"🛍️ Semantic search returned {len(matches)} matches")
-                    else:
-                        # Success! Store the MCP data
-                        mcp_context['products'] = mcp_response.get('products', [])
-                        mcp_context['pagination'] = mcp_response.get('pagination', {})
-                        mcp_context['filters'] = mcp_response.get('filters', [])
-                        
-                        logger.info(f"🛍️ ✅ MCP product search successful!")
-                        logger.info(f"🛍️ Stored {len(mcp_context['products'])} products in context")
-                        
-                        # Log pagination info
-                        pagination = mcp_context.get('pagination', {})
-                        if pagination:
-                            current_page = pagination.get('currentPage', 1)
-                            max_pages = pagination.get('maxPages', 'unknown')
-                            has_next = pagination.get('hasNextPage', False)
-                            logger.info(f"🛍️ Pagination: page {current_page} of {max_pages}, has_next: {has_next}")
-                        
-                        # Log filter info
-                        filters = mcp_context.get('filters', [])
-                        if filters:
-                            logger.info(f"🛍️ Available filters: {len(filters)}")
-                            for filter_item in filters:
-                                filter_label = filter_item.get('label', 'Unknown')
-                                logger.info(f"🛍️   - {filter_label}")
-                    
-                    # Track analytics
-                    if mp:
-                        mp.track(distinct_id, "mcp_product_search_detailed", {
-                            "site_id": site_id,
-                            "session_id": session_id,
-                            "shopify_domain": mcp_domain,
-                            "original_query": latest_user_query,
-                            "rewritten_query": rewritten_query,
-                            "search_parameters": search_parameters,
-                            "context_used": context,
-                            "product_count": len(mcp_context.get('products', [])),
-                            "has_pagination": bool(mcp_context.get('pagination')),
-                            "has_filters": bool(mcp_context.get('filters')),
-                            "error": mcp_response.get('error'),
-                            "query_type": query_type,
-                            "detected_language": detected_language
-                        })
-                        
-                elif query_type == 'policy_question':
-                    logger.info(f"🛍️ ===== POLICY SEARCH FLOW =====")
-                    logger.info(f"🛍️ Processing policy question...")
-                    logger.info(f"🛍️ Policy query: '{rewritten_query}'")
-                    
-                    logger.info(f"🛍️ Calling MCP get_policies_sync...")
-                    mcp_response = shopify_mcp_service.get_policies_sync(rewritten_query)
-                    logger.info(f"🛍️ MCP policy search completed")
-                    
-                    # Log policy response
-                    logger.info(f"🛍️ Policy Response Analysis:")
-                    logger.info(f"🛍️   - Has error: {mcp_response.get('error') is not None}")
-                    logger.info(f"🛍️   - Error: {mcp_response.get('error')}")
-                    
-                    policies = mcp_response.get('policies', {})
-                    if policies:
-                        logger.info(f"🛍️   - Policies found: {len(policies) if isinstance(policies, dict) else type(policies)}")
-                        if isinstance(policies, dict):
-                            for policy_key in policies.keys():
-                                logger.info(f"🛍️     - {policy_key}")
-                    
-                    if mcp_response.get('error'):
-                        logger.warning(f"🛍️ MCP policy search failed: {mcp_response['error']}")
-                        logger.info(f"🛍️ Falling back to embeddings search...")
-                        
-                        # Fallback to embeddings
-                        if not matches:
-                            logger.info(f"🛍️ Performing semantic search for policy info...")
-                            matches = semantic_search(embedding, site_id)
-                            logger.info(f"🛍️ Semantic search returned {len(matches)} matches")
-                    else:
-                        mcp_context['policies'] = policies
-                        logger.info(f"🛍️ ✅ MCP policy search successful!")
-                    
-                    # Track policy analytics
-                    if mp:
-                        mp.track(distinct_id, "mcp_policy_search_detailed", {
-                            "site_id": site_id,
-                            "session_id": session_id,
-                            "shopify_domain": mcp_domain,
-                            "policy_query": rewritten_query,
-                            "policies_found": list(policies.keys()) if isinstance(policies, dict) else [],
-                            "error": mcp_response.get('error'),
-                            "query_type": query_type
-                        })
-                
-                else:
-                    logger.info(f"🛍️ Query type '{query_type}' does not require MCP processing")
-                        
-            except Exception as e:
-                logger.error(f"🛍️ ===== MCP INTEGRATION EXCEPTION =====")
-                logger.error(f"🛍️ Exception type: {type(e).__name__}")
-                logger.error(f"🛍️ Exception message: {str(e)}")
-                logger.error(f"🛍️ Shopify domain: {shopify_domain}")
-                logger.error(f"🛍️ Query type: {query_type}")
-                logger.error(f"🛍️ Search parameters: {search_parameters}")
-                
-                # Log full traceback
-                import traceback
-                logger.error(f"🛍️ Full traceback:")
-                for line in traceback.format_exc().split('\n'):
-                    if line.strip():
-                        logger.error(f"🛍️   {line}")
-                
-                sentry_sdk.capture_exception(e)
-                
-                # Always fallback to embeddings if MCP fails
-                logger.info(f"🛍️ Falling back to embeddings after exception...")
-                if not matches:
-                    logger.info(f"🛍️ Performing emergency semantic search...")
-                    matches = semantic_search(embedding, site_id)
-                    logger.info(f"🛍️ Emergency semantic search returned {len(matches)} matches")
-                    
-                if mp:
-                    mp.track(distinct_id, "mcp_integration_exception", {
-                        "site_id": site_id,
-                        "shopify_domain": shopify_domain,
-                        "error_type": type(e).__name__,
-                        "error_message": str(e),
-                        "query_type": query_type,
-                        "search_parameters": search_parameters,
-                        "fallback_matches": len(matches)
-                    })
-            
-            logger.info(f"🛍️ ===== SHOPIFY MCP INTEGRATION END =====")
-            logger.info(f"🛍️ Final MCP context: products={len(mcp_context.get('products', []))}, policies={bool(mcp_context.get('policies'))}")
+        # Perform semantic search
+        matches = semantic_search(embedding, site_id)
+        sentry_sdk.set_extra("vector_search_results", matches[:3])
         
-        else:
-            # Log why MCP was skipped
-            if not is_shopify:
-                logger.info(f"🛍️ Skipping MCP: Not a Shopify store")
-            elif not needs_mcp:
-                logger.info(f"🛍️ Skipping MCP: Query type '{query_type}' doesn't need MCP")
-            elif not shopify_domain:
-                logger.info(f"🛍️ Skipping MCP: No Shopify domain configured")
-            else:
-                logger.info(f"🛍️ Skipping MCP: Unknown reason (is_shopify={is_shopify}, needs_mcp={needs_mcp}, shopify_domain={shopify_domain})")
-
-
-
         if mp:
             mp.track(distinct_id, "vector_search_performed", {
                 "site_id": site_id,
@@ -1497,63 +622,12 @@ def advanced_ask_endpoint():
                 "top_matches": matches[:2]
             })
         
-        
-        # ===== CONTEXT BUILDING WITH DETAILED LOGGING =====
-        logger.info(f"🔗 ===== CONTEXT BUILDING START =====")
-        logger.info(f"🔗 Embedding matches: {len(matches)}")
-        logger.info(f"🔗 MCP products: {len(mcp_context.get('products', []))}")
-        logger.info(f"🔗 MCP policies: {bool(mcp_context.get('policies'))}")
-        
-        # Build context from search results and MCP data
-        embedding_context = "\n\n".join(
+        # Build context from search results
+        context = "\n\n".join(
             match.get("detail") or match.get("text") or "" 
             for match in matches if match
         )
-        logger.info(f"🔗 Embedding context length: {len(embedding_context)} characters")
-
-        # Enhanced product context for Shopify with detailed logging
-        product_context = ""
-        structured_product_data = None
-        if mcp_context.get('products'):
-            logger.info(f"🔗 Building product context from {len(mcp_context['products'])} products...")
-            
-            # Create both display context and structured data for LLM
-            product_context = format_products_for_llm(mcp_context['products'])
-            structured_product_data = mcp_context['products']  # Keep raw data for LLM access
-            
-            logger.info(f"🔗 Product context built: {len(product_context)} characters")
-
-        # Policy context (if available)
-        policy_context = ""
-        if mcp_context.get('policies'):
-            logger.info(f"🔗 Building policy context...")
-            
-            policy_lines = []
-            policies = mcp_context['policies']
-            
-            if isinstance(policies, dict):
-                for policy_type, policy_data in policies.items():
-                    logger.debug(f"🔗 Processing policy: {policy_type}")
-                    
-                    if isinstance(policy_data, dict) and policy_data.get('content'):
-                        content = policy_data['content'][:200] + "..." if len(policy_data['content']) > 200 else policy_data['content']
-                        policy_lines.append(f"**{policy_type}**: {content}")
-                    elif isinstance(policy_data, str):
-                        content = policy_data[:200] + "..." if len(policy_data) > 200 else policy_data
-                        policy_lines.append(f"**{policy_type}**: {content}")
-            
-            if policy_lines:
-                policy_context = "\n\n**📋 Store Policies:**\n" + "\n".join(policy_lines)
-                logger.info(f"🔗 Policy context built: {len(policy_context)} characters")
-
-        # Combine all contexts
-        context = embedding_context + product_context + policy_context
-        logger.info(f"🔗 Total context length: {len(context)} characters")
-        logger.info(f"🔗 Context breakdown: embeddings={len(embedding_context)}, products={len(product_context)}, policies={len(policy_context)}")
-        logger.info(f"🔗 ===== CONTEXT BUILDING END =====")
-
-
-
+        
         # Prepare messages for OpenAI
         updated_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         
@@ -1595,86 +669,19 @@ def advanced_ask_endpoint():
             lang_name = language_map.get(detected_language, detected_language.title())
             language_instruction = f"\n\nIMPORTANT: The user wrote their message in {lang_name}. You MUST respond in {lang_name}. Write your entire 'content' field response in {lang_name}."
 
-
-        # Build focused prompt with enhanced MCP intelligence
-        context_label = "Relevant information" if is_shopify else "Relevant website content"
-        focused_prompt = f"{latest_user_query}\n\n{context_label}:\n{context}{language_instruction}"
-
-        # Enhanced Shopify-specific instructions with MCP intelligence
-        if is_shopify and mcp_context:
-            shopify_instructions = "\n\nYou have access to real-time product information and store policies."
-            
-            if mcp_context.get('products'):
-                # Generate intelligent product carousel from MCP data
-                carousel_products = map_shopify_products_to_carousel(mcp_context)
-                
-                # Generate dynamic quick replies based on available filters
-                dynamic_quick_replies = generate_dynamic_quick_replies(
-                    mcp_context, intent_label, query_type
-                )
-                
-                # Generate intelligent follow-up based on result context
-                follow_up_data = generate_intelligent_follow_up(
-                    mcp_context, latest_user_query, intent_label
-                )
-                
-                # Log the generated intelligence
-                logger.info(f"🛍️ Generated {len(carousel_products)} carousel products")
-                logger.info(f"🛍️ Generated quick replies: {dynamic_quick_replies}")
-                logger.info(f"🛍️ Generated follow-up: {follow_up_data}")
-                
-                shopify_instructions += f"""
-
-        🛍️ ENHANCED PRODUCT RECOMMENDATION WITH REAL MCP DATA:
-
-        PRODUCTS TO INCLUDE IN CAROUSEL (use exact data):
-        {json.dumps(carousel_products, indent=2)}
-
-        SUGGESTED QUICK_REPLIES:
-        {json.dumps(dynamic_quick_replies)}
-
-        FOLLOW-UP STRATEGY:
-        - follow_up: {follow_up_data['follow_up']}
-        - follow_up_prompt: "{follow_up_data['follow_up_prompt']}"
-
-        SEARCH CONTEXT:
-        - Total products available: {mcp_context.get('pagination', {}).get('totalCount', 'unknown')}
-        - Filter options available: {len(mcp_context.get('available_filters', []))} filter groups
-        - Has more pages: {mcp_context.get('pagination', {}).get('hasNextPage', False)}
-
-        INSTRUCTIONS:
-        1. Use the EXACT product data above in your product_carousel response
-        2. Use the suggested quick_replies to guide user interaction
-        3. Apply the follow_up strategy for continued engagement  
-        4. If user asks for more products, mention pagination availability
-        5. Reference total count when relevant to set expectations
-        """
-            
-            if mcp_context.get('policies'):
-                shopify_instructions += f"""
-
-        📋 STORE POLICIES AVAILABLE:
-        You have access to store policy information including:
-        {list(mcp_context['policies'].keys()) if isinstance(mcp_context.get('policies'), dict) else 'Policy data available'}
-        """
-            
-            focused_prompt += shopify_instructions
-
+        # Build focused prompt with context
+        focused_prompt = f"{latest_user_query}\n\nRelevant website content:\n{context}{language_instruction}"
+        updated_messages.append({
+            "role": "user",
+            "content": focused_prompt
+        })
+        
         # Add site-specific custom prompt if available
         if custom_prompt:
             updated_messages.append({
                 "role": "system",
                 "content": custom_prompt
             })
-
-        # Log the final enhanced prompt
-        logger.info(f"🔗 Enhanced prompt built with MCP intelligence")
-        logger.info(f"🔗 Prompt length: {len(focused_prompt)} characters")
-        if mcp_context.get('products'):
-            logger.info(f"🔗 Includes {len(carousel_products)} products for carousel")
-        if mcp_context.get('available_filters'):
-            logger.info(f"🔗 Includes {len(mcp_context['available_filters'])} filter groups")
-
         
         # Add final system prompt to ensure JSON response
         updated_messages.append({
@@ -1712,8 +719,8 @@ def advanced_ask_endpoint():
                 "session_id": session_id,
                 "raw_reply": raw_reply
             })
-
-        # Extract JSON from response with better error handling
+        
+        # Extract JSON from response
         match = re.search(r"\{.*\}", raw_reply, re.DOTALL)
         if not match:
             logger.error(f"Model returned invalid JSON: {raw_reply}")
@@ -1721,33 +728,9 @@ def advanced_ask_endpoint():
                 "error": "Model returned invalid JSON.", 
                 "raw_reply": raw_reply
             }), 500
-
-        try:
-            reply_json = json.loads(match.group(0))
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing failed: {e}, Raw: {raw_reply}")
-            return jsonify({
-                "error": "Invalid JSON response from AI",
-                "raw_reply": raw_reply
-            }), 500
-
-        # Validate required fields
-        if not reply_json.get("content"):
-            logger.error(f"Missing required 'content' field in response: {reply_json}")
-            reply_json["content"] = "I'm here to help! How can I assist you today?"
-
+        
+        reply_json = json.loads(match.group(0))
         assistant_content = reply_json.get("content", raw_reply)
-
-        # Log enhanced features usage
-        if reply_json.get("product_carousel"):
-            logger.info(f"🛍️ Response includes {len(reply_json['product_carousel'])} products in carousel")
-            
-        if reply_json.get("quick_replies"):
-            logger.info(f"💬 Response includes {len(reply_json['quick_replies'])} quick replies: {reply_json['quick_replies']}")
-            
-        if reply_json.get("follow_up"):
-            logger.info(f"🔄 Response includes follow-up: {reply_json.get('follow_up_prompt')}")
-
         
         # Extract analytic flags from response
         lang = reply_json.get("lang")
@@ -1799,36 +782,16 @@ def advanced_ask_endpoint():
         # Final tracking
         sentry_sdk.set_extra("frontend_response_payload", reply_json)
         
-
-
         if mp:
             mp.track(distinct_id, "bot_reply_sent", {
                 "session_id": session_id,
                 "site_id": site_id,
                 "content": assistant_content,
-                "lead_triggered": reply_json.get("leadTriggered", False),
-                "is_shopify": is_shopify,
-                "query_type": query_type,
-                "used_mcp": needs_mcp and is_shopify,
-                "used_embeddings": needs_embeddings
+                "lead_triggered": reply_json.get("leadTriggered", False)
             })
         
-        # Track enhanced features usage
-        if mp:
-            mp.track(distinct_id, "enhanced_features_used", {
-                "site_id": site_id,
-                "session_id": session_id,
-                "has_product_carousel": bool(reply_json.get("product_carousel")),
-                "product_count": len(reply_json.get("product_carousel", [])),
-                "has_quick_replies": bool(reply_json.get("quick_replies")),
-                "quick_replies_count": len(reply_json.get("quick_replies", [])),
-                "has_follow_up": reply_json.get("follow_up", False),
-                "intent": reply_json.get("intent"),
-                "confidence": reply_json.get("answer_confidence"),
-                "is_shopify": is_shopify,
-                "used_mcp_products": bool(mcp_context.get('products'))
-            })
-
+        logger.info(f"Chat response generated for site_id: {site_id}")
+        
         return jsonify(reply_json)
         
     except Exception as e:
