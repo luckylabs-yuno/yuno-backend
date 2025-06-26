@@ -880,40 +880,54 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
     carousel_products = []
     
     for product in products[:max_products]:
-        # FIXED: Handle the actual MCP format, not Shopify variants
-        # MCP format: product has direct price, currency, etc.
+        # Extract VARIANT ID for cart operations
+        variant_id = None
+        variants = product.get('variants', [])
         
-        # Extract price information directly from product
+        if variants:
+            # Get first available variant
+            for variant in variants:
+                if variant.get('available', True):
+                    variant_gid = variant.get('variant_id')  # e.g., "gid://shopify/ProductVariant/45832173879526"
+                    if variant_gid and 'ProductVariant/' in variant_gid:
+                        # Extract numeric variant ID
+                        variant_id = variant_gid.split('ProductVariant/')[-1]  # e.g., "45832173879526"
+                        break
+            
+            # Fallback to first variant if none available
+            if not variant_id and variants:
+                variant_gid = variants[0].get('variant_id')
+                if variant_gid and 'ProductVariant/' in variant_gid:
+                    variant_id = variant_gid.split('ProductVariant/')[-1]
+        
+        # Skip product if no variant found
+        if not variant_id:
+            logger.warning(f"🛒 No variant ID found for product: {product.get('title')}")
+            continue
+        
+        # Extract price information
         price = product.get('price', 0)
-        price_max = product.get('price_max')
         currency = product.get('currency', 'INR')
         
-        # Format price properly
+        # Format price
         if currency == 'INR':
             price_display = f"₹{price:,.0f}"
-            compare_price_display = f"₹{price_max:,.0f}" if price_max and price_max != price else None
-        elif currency == 'USD':
-            price_display = f"${price:.2f}"
-            compare_price_display = f"${price_max:.2f}" if price_max and price_max != price else None
         else:
             price_display = f"{currency} {price}"
-            compare_price_display = f"{currency} {price_max}" if price_max and price_max != price else None
         
-        # Build carousel product with correct data
         carousel_product = {
-            "id": product.get('id', ''),
+            "id": product.get('product_id'),  # ← KEEP Product GID for product page links
+            "variant_id": variant_id,         # ← ADD numeric variant ID for cart
             "title": product.get('title', 'Unknown Product'),
             "price": price_display,
-            "image": product.get('image', ''),
+            "image": product.get('image_url', ''),
             "handle": product.get('url', '').split('/')[-1] if product.get('url') else '',
+            "url": product.get('url', ''),    # ← ADD direct product URL
             "available": product.get('inStock', True)
         }
         
-        # Add compare_at_price if we have a price range
-        if compare_price_display:
-            carousel_product["compare_at_price"] = compare_price_display
-        
         carousel_products.append(carousel_product)
+        logger.info(f"🛒 Mapped product: {product.get('title')} → Product ID: {product.get('product_id')}, Variant ID: {variant_id}")
     
     return carousel_products
 
