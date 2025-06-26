@@ -84,24 +84,24 @@ def get_site_id_key():
     except:
         return get_remote_address()
 
-# Import and register blueprints AFTER CORS setup
+
+# Import all blueprints
 from routes.auth import auth_bp
-from routes.onboarding import onboarding_bp  # NEW IMPORT
-from routes.dashboard import dashboard_bp  # Add this import
-from routes.chat import chat_bp                    # General chat
-from routes.chat_shopify import shopify_chat_bp    # Shopify chat
-
-# Register them with different prefixes
-app.register_blueprint(chat_bp, url_prefix='/')         # Makes /ask
-app.register_blueprint(shopify_chat_bp, url_prefix='/shopify')  # Makes /shopify/ask
-
-# Register blueprints
-app.register_blueprint(onboarding_bp, url_prefix='/onboarding')  # NEW REGISTRATION - Onboarding endpoints
-app.register_blueprint(dashboard_bp)  # Add this registration
-app.register_blueprint(auth_bp, url_prefix='/widget')            # Widget authentication
-app.register_blueprint(chat_bp, url_prefix='/')                  # Chat endpoints
+from routes.onboarding import onboarding_bp
+from routes.dashboard import dashboard_bp
+from routes.chat import chat_bp
+from routes.chat_shopify import shopify_chat_bp
 from routes.shopify import shopify_bp
+
+# Register blueprints (no duplicates)
+app.register_blueprint(auth_bp, url_prefix='/widget')
+app.register_blueprint(onboarding_bp, url_prefix='/onboarding')
+app.register_blueprint(dashboard_bp)
+app.register_blueprint(chat_bp, url_prefix='/')
+app.register_blueprint(shopify_chat_bp, url_prefix='/shopify')
 app.register_blueprint(shopify_bp, url_prefix='/shopify')
+
+
 # Preflight handler - FIXED VERSION
 @app.before_request
 def handle_preflight():

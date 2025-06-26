@@ -1861,7 +1861,7 @@ def shopify_ask_endpoint():  # Rename function too for clarity
             }), 500
 
 # Health check endpoint
-@chat_bp.route('/health', methods=['GET', 'OPTIONS'])
+@shopify_chat_bp.route('/health', methods=['GET', 'OPTIONS'])
 def shopify_chat_health():
     """Health check for chat service"""
     return jsonify({
@@ -1871,7 +1871,7 @@ def shopify_chat_health():
     })
 
 # Debug endpoints
-@chat_bp.route('/debug', methods=['GET', 'OPTIONS'])
+@shopify_chat_bp.route('/debug', methods=['GET', 'OPTIONS'])
 def shopify_debug_components():
     """Debug endpoint to test all components and environment"""
     debug_info = {
@@ -1935,7 +1935,7 @@ def shopify_debug_components():
     
     return jsonify(debug_info)
 
-@chat_bp.route('/debug/ask-simple', methods=['POST', 'OPTIONS'])
+@shopif_chat_bp.route('/debug/ask-simple', methods=['POST', 'OPTIONS'])
 @require_widget_token
 def shopify_debug_ask_simple():
     """Simplified ask endpoint with detailed error logging"""
