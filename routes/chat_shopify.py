@@ -1935,7 +1935,7 @@ def shopify_debug_components():
     
     return jsonify(debug_info)
 
-@shopif_chat_bp.route('/debug/ask-simple', methods=['POST', 'OPTIONS'])
+@shopify_chat_bp.route('/debug/ask-simple', methods=['POST', 'OPTIONS'])
 @require_widget_token
 def shopify_debug_ask_simple():
     """Simplified ask endpoint with detailed error logging"""
