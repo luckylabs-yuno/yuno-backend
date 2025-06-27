@@ -130,7 +130,8 @@ def get_default_prompts_and_models() -> Dict:
         'cache_version': 0
     }
 
-def get_default_rewriter_prompt() -> str:
+
+def get_default_enhanced_prompt(chat_log: str, latest: str) -> str:
     """Extract current rewriter prompt as default"""
     return """
     You are a JSON-only query analysis service. Analyze the user's query and determine intent, language, and data routing needs.
@@ -744,10 +745,9 @@ def insert_lead(lead_data):
     except Exception as e:
         logger.error(f"Error inserting lead: {str(e)}")
 
-
-def rewrite_query_with_context_and_language(history: List[dict], latest: str) -> dict:
+def rewrite_query_with_context_and_language(history: List[dict], latest: str, prompts_config: Dict = None) -> dict:
     """
-    Enhanced query rewriter with better intent detection
+    Enhanced query rewriter with better intent detection and dynamic prompts
     """
     try:
         chat_log = "\n".join([
@@ -755,15 +755,27 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
             for m in history
         ])
 
-        # FIXED PROMPT with better examples and clearer instructions
-        enhanced_prompt = prompts_config['rewriter_prompt'].format(
-            chat_log=chat_log,
-            latest=latest
-        )
-
+        # Use dynamic rewriter prompt if available, otherwise use default
+        if prompts_config and prompts_config.get('rewriter_prompt'):
+            try:
+                enhanced_prompt = prompts_config['rewriter_prompt'].format(
+                    chat_log=chat_log,
+                    latest=latest
+                )
+                rewriter_model = prompts_config.get('rewriter_model', 'gpt-4o-mini-2024-07-18')
+                logger.info(f"🎯 Using custom rewriter prompt and model: {rewriter_model}")
+            except KeyError as e:
+                logger.warning(f"🎯 Custom rewriter prompt missing placeholder {e}, falling back to default")
+                enhanced_prompt = get_default_enhanced_prompt(chat_log, latest)
+                rewriter_model = 'gpt-4o-mini-2024-07-18'
+        else:
+            # Fallback to default hardcoded prompt
+            enhanced_prompt = get_default_enhanced_prompt(chat_log, latest)
+            rewriter_model = 'gpt-4o-mini-2024-07-18'
+            logger.info("🎯 Using default rewriter prompt and model")
 
         response = openai_client.chat.completions.create(
-            model=prompts_config['rewriter_model'],  # 🆕 Dynamic model
+            model=rewriter_model,  # Use dynamic model
             messages=[
                 {
                     "role": "system", 
@@ -790,7 +802,7 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
                 logger.info(f"🔍   Original: '{latest}'")
                 logger.info(f"🔍   Rewritten: '{result_json.get('rewritten_prompt', latest)}'")
                 logger.info(f"🔍   Type: {result_json.get('query_type', 'unknown')}")
-                logger.info(f"🔍   Language: {result_json.get('ques_lang', 'unknown')}")
+                logger.info(f"🔍   Language: '{result_json.get('ques_lang', 'unknown')}'")
                 logger.info(f"🔍   Needs MCP: {result_json.get('needs_mcp', False)}")
                 
                 return {
@@ -813,6 +825,7 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
     except Exception as e:
         logger.warning("Enhanced query rewrite failed: %s", str(e))
         return classify_query_manually(latest)
+
 
 def classify_query_manually(query: str) -> dict:
     """Manual fallback classification for when AI fails"""
