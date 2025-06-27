@@ -972,7 +972,6 @@ def generate_intelligent_follow_up(mcp_response, user_query, intent):
         "follow_up_prompt": "Would you like more details about any of these products?"
     }
 ################################### NEW FILES ################################
-# Replace these functions in chat_shopify.py
 def map_shopify_products_to_carousel(mcp_response, max_products=3):
     """Map Shopify MCP response to unified contract product_carousel format"""
     if not mcp_response or not mcp_response.get('products'):
@@ -981,14 +980,14 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
     products = mcp_response['products']
     carousel_products = []
     
-    # 🆕 DEBUG: Log the first product structure
+    # Debug: Log the first product structure
     if products:
         first_product = products[0]
         logger.info(f"🔍 First product structure: {json.dumps(first_product, indent=2)}")
         logger.info(f"🔍 Available keys: {list(first_product.keys())}")
     
     for product in products[:max_products]:
-        # Extract VARIANT ID for cart operations
+        # Extract VARIANT ID for cart operations - IMPROVED VERSION
         variant_id = None
         variants = product.get('variants', [])
         
@@ -996,22 +995,46 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
             # Get first available variant
             for variant in variants:
                 if variant.get('available', True):
-                    variant_gid = variant.get('variant_id')  # e.g., "gid://shopify/ProductVariant/45832173879526"
-                    if variant_gid and 'ProductVariant/' in variant_gid:
-                        # Extract numeric variant ID
-                        variant_id = variant_gid.split('ProductVariant/')[-1]  # e.g., "45832173879526"
+                    # Try multiple possible variant ID fields
+                    variant_gid = (variant.get('variant_id') or 
+                                 variant.get('id') or 
+                                 variant.get('variantId') or
+                                 variant.get('gid'))
+                    
+                    if variant_gid:
+                        # Handle GID format
+                        if 'ProductVariant/' in str(variant_gid):
+                            variant_id = str(variant_gid).split('ProductVariant/')[-1]
+                        else:
+                            # Use as-is if it's already a numeric ID
+                            variant_id = str(variant_gid)
                         break
             
             # Fallback to first variant if none available
             if not variant_id and variants:
-                variant_gid = variants[0].get('variant_id')
-                if variant_gid and 'ProductVariant/' in variant_gid:
-                    variant_id = variant_gid.split('ProductVariant/')[-1]
+                first_variant = variants[0]
+                variant_gid = (first_variant.get('variant_id') or 
+                             first_variant.get('id') or 
+                             first_variant.get('variantId') or
+                             first_variant.get('gid'))
+                
+                if variant_gid:
+                    if 'ProductVariant/' in str(variant_gid):
+                        variant_id = str(variant_gid).split('ProductVariant/')[-1]
+                    else:
+                        variant_id = str(variant_gid)
         
-        # Skip product if no variant found
+        # FALLBACK: If still no variant found, create a placeholder
         if not variant_id:
             logger.warning(f"🛒 No variant ID found for product: {product.get('title')}")
-            continue
+            logger.warning(f"🛒 Available variant fields: {list(variants[0].keys()) if variants else 'No variants'}")
+            # Instead of skipping, use product ID as fallback
+            product_id = product.get('id', product.get('product_id', ''))
+            if product_id and 'Product/' in str(product_id):
+                variant_id = str(product_id).split('Product/')[-1] + '_default'
+            else:
+                variant_id = f"default_{len(carousel_products)}"
+            logger.info(f"🛒 Using fallback variant_id: {variant_id}")
         
         # Extract price information
         price = product.get('price', 0)
@@ -1023,34 +1046,28 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
         else:
             price_display = f"{currency} {price}"
         
-        # 🆕 FIX: Extract product_id correctly based on actual MCP structure
+        # Extract product_id correctly
         product_id = None
-        
-        # Try multiple field names based on your MCP response structure
-        for id_field in ['product_id', 'id', 'gid']:
+        for id_field in ['id', 'product_id', 'gid']:
             if product.get(id_field):
                 product_id = product.get(id_field)
                 logger.info(f"🔍 Found product ID in field '{id_field}': {product_id}")
                 break
         
+        # FALLBACK: Don't skip if no product ID, use title-based ID
         if not product_id:
-            logger.warning(f"🛒 No product ID found for product: {product.get('title')}")
-            logger.warning(f"🛒 Available fields: {list(product.keys())}")
-            continue
+            product_id = f"product_{len(carousel_products)}_{product.get('title', 'unknown').lower().replace(' ', '_')}"
+            logger.warning(f"🛒 Using fallback product_id: {product_id}")
         
-        # 🆕 FIX: Extract image URL correctly
+        # Extract image URL correctly
         image_url = ""
-        for image_field in ['image_url', 'image', 'featured_image', 'img']:
+        for image_field in ['image', 'image_url', 'featured_image', 'img']:
             if product.get(image_field):
                 image_url = product.get(image_field)
                 logger.info(f"🔍 Found image in field '{image_field}': {image_url[:50]}...")
                 break
         
-        if not image_url:
-            logger.warning(f"🛒 No image found for product: {product.get('title')}")
-            logger.warning(f"🛒 Available fields: {list(product.keys())}")
-        
-        # 🆕 FIX: Extract URL correctly
+        # Extract URL correctly
         product_url = ""
         for url_field in ['url', 'product_url', 'link']:
             if product.get(url_field):
@@ -1058,21 +1075,23 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
                 break
         
         carousel_product = {
-            "id": product_id,                     # ← 🆕 FIX: Use extracted product_id
-            "variant_id": variant_id,             # ← ADD numeric variant ID for cart
+            "id": product_id,
+            "variant_id": variant_id,
             "title": product.get('title', 'Unknown Product'),
             "price": price_display,
-            "image": image_url,                   # ← 🆕 FIX: Use extracted image_url
+            "image": image_url,
             "handle": product_url.split('/')[-1] if product_url else '',
-            "url": product_url,                   # ← ADD direct product URL
+            "url": product_url,
             "available": product.get('inStock', True)
         }
         
         carousel_products.append(carousel_product)
-        logger.info(f"🛒 Mapped product: {product.get('title')} → Product ID: {product_id}, Variant ID: {variant_id}, Image: {image_url[:50] if image_url else 'None'}")
+        logger.info(f"🛒 Successfully mapped product: {product.get('title')} → Product ID: {product_id}, Variant ID: {variant_id}")
     
+    logger.info(f"🛒 Final carousel products count: {len(carousel_products)}")
     return carousel_products
-  
+
+
 def format_products_for_llm(mcp_products):
     """Format MCP products for LLM context with structured product data"""
     if not mcp_products:
