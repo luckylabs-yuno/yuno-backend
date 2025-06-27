@@ -16,6 +16,7 @@ from utils.helpers import LoggingHelpers, ResponseHelpers
 import sentry_sdk
 from services.shopify_mcp_service import ShopifyMCPService
 from urllib.parse import urlparse
+import google.generativeai as genai
 
 # Import OpenAI v1.0+ style
 from openai import OpenAI
@@ -34,6 +35,7 @@ shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
 MIXPANEL_TOKEN = os.getenv("MIXPANEL_TOKEN")
 
 # Supabase function URL for semantic search
@@ -41,6 +43,18 @@ SUPABASE_FUNCTION_URL = f"{SUPABASE_URL}/rest/v1/rpc/yunosearch"
 
 # Initialize OpenAI client (v1.0+ style)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Initialize Gemini client instead of OpenAI
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    # Use Gemini Pro model for chat
+    gemini_model = genai.GenerativeModel('gemini-1.5-pro')
+    # Use text-embedding-004 for embeddings (Gemini's embedding model)
+    embedding_model = genai.GenerativeModel('text-embedding-004')
+else:
+    gemini_model = None
+    embedding_model = None
+    logger.warning("GEMINI_API_KEY not found - Gemini services will not work")
 
 # Initialize Mixpanel if token is available
 mp = None
@@ -93,9 +107,13 @@ def get_site_prompts_and_models(site_id: str) -> Dict:
                 'custom_prompt': data.get('site_prompt'),  # Can be None
                 'shopify_instructions': data.get('shopify_instructions'),  # Can be None
                 
-                # Models (fallback to defaults)
-                'rewriter_model': data.get('rewriter_model') or 'gpt-4o-mini-2024-07-18',
-                'main_model': data.get('main_model') or 'gpt-4.1-mini-2025-04-14',
+                # Models - Gemini (fallback to Gemini models)
+                'rewriter_model': data.get('rewriter_model') or 'gemini-2.5-flash',
+                'main_model': data.get('main_model') or 'gemini-2.5-flash',
+
+                # Models - Open AI (fallback to defaults)
+                #'rewriter_model': data.get('rewriter_model') or 'gpt-4o-mini-2024-07-18',
+                #'main_model': data.get('main_model') or 'gpt-4.1-mini-2025-04-14',
                 
                 # Cache metadata
                 'cache_version': data.get('prompts_cache_version', 1)
@@ -125,8 +143,8 @@ def get_default_prompts_and_models() -> Dict:
         'rewriter_prompt': get_default_rewriter_prompt(),
         'custom_prompt': None,
         'shopify_instructions': None,
-        'rewriter_model': 'gpt-4o-mini-2024-07-18',
-        'main_model': 'gpt-4.1-mini-2025-04-14',
+        'rewriter_model': 'gemini-2.5-flash',
+        'main_model': 'gemini-2.5-flash',
         'cache_version': 0
     }
 
@@ -762,34 +780,39 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str, pr
                     chat_log=chat_log,
                     latest=latest
                 )
-                rewriter_model = prompts_config.get('rewriter_model', 'gpt-4o-mini-2024-07-18')
+                rewriter_model = prompts_config.get('rewriter_model', 'gemini-2.5-flash')
                 logger.info(f"🎯 Using custom rewriter prompt and model: {rewriter_model}")
             except KeyError as e:
                 logger.warning(f"🎯 Custom rewriter prompt missing placeholder {e}, falling back to default")
                 enhanced_prompt = get_default_enhanced_prompt(chat_log, latest)
-                rewriter_model = 'gpt-4o-mini-2024-07-18'
+                rewriter_model = 'gemini-2.5-flash'
         else:
             # Fallback to default hardcoded prompt
             enhanced_prompt = get_default_enhanced_prompt(chat_log, latest)
-            rewriter_model = 'gpt-4o-mini-2024-07-18'
+            rewriter_model = 'gemini-2.5-flash'
             logger.info("🎯 Using default rewriter prompt and model")
 
-        response = openai_client.chat.completions.create(
-            model=rewriter_model,  # Use dynamic model
-            messages=[
-                {
-                    "role": "system", 
-                    "content": "You are a precise query classifier. Focus on the user's actual intent, not assumed context. Product questions should always be classified as product_search."
-                },
-                {
-                    "role": "user", 
-                    "content": enhanced_prompt
-                }
-            ],
-            temperature=0.1  # Lower temperature for more consistent classification
+        # Use Gemini instead of OpenAI
+        gemini_prompt = "You are a precise query classifier. Focus on the user's actual intent, not assumed context. Product questions should always be classified as product_search."
+        
+        # Combine system prompt with user prompt for Gemini
+        full_prompt = f"{gemini_prompt}\n\n{enhanced_prompt}"
+        
+        # Create Gemini model with specific model name
+        current_model = genai.GenerativeModel(rewriter_model)
+        
+        # Configure generation
+        generation_config = genai.types.GenerationConfig(
+            temperature=0.1,  # Lower temperature for more consistent classification
+            max_output_tokens=1000,
+        )
+        
+        response = current_model.generate_content(
+            full_prompt,
+            generation_config=generation_config
         )
 
-        result_text = response.choices[0].message.content.strip()
+        result_text = response.text.strip()
         
         # Extract JSON
         match = re.search(r'\{.*\}', result_text, re.DOTALL)
@@ -1072,7 +1095,7 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
         logger.info(f"🛒 Mapped product: {product.get('title')} → Product ID: {product_id}, Variant ID: {variant_id}, Image: {image_url[:50] if image_url else 'None'}")
     
     return carousel_products
-  
+
 def format_products_for_llm(mcp_products):
     """Format MCP products for LLM context with structured product data"""
     if not mcp_products:
@@ -1887,16 +1910,25 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 "session_id": session_id,
                 "full_prompt": focused_prompt
             })
+
+
+        # Call Gemini instead of OpenAI
+        current_model = genai.GenerativeModel(prompts_config['main_model'])
         
-        # Call OpenAI (v1.0+ syntax)
-        completion = openai_client.chat.completions.create(
-            model=prompts_config['main_model'],  # 🆕 Dynamic model
-            messages=updated_messages,
-            temperature=0.5
+        generation_config = genai.types.GenerationConfig(
+            temperature=0.5,
+            max_output_tokens=2048,
         )
         
-        raw_reply = completion.choices[0].message.content.strip()
-        sentry_sdk.set_extra("gpt_raw_reply", raw_reply)
+        completion = current_model.generate_content(
+            prompts_config['main_model'],  # 🆕 Dynamic model
+            generation_config=generation_config
+        )
+        
+        raw_reply = completion.text.strip()
+        sentry_sdk.set_extra("gemini_raw_reply", raw_reply)
+
+        
         
         if mp:
             mp.track(distinct_id, "gpt_response_received", {
