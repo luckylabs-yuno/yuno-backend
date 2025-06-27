@@ -1018,22 +1018,29 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
         else:
             price_display = f"{currency} {price}"
         
+        # 🆕 FIX: Get the product_id correctly
+        product_id = product.get('product_id')  # This should be the GID
+        if not product_id:
+            # Fallback: try 'id' field
+            product_id = product.get('id')
+        
         carousel_product = {
-            "id": product.get('product_id'),  # ← KEEP Product GID for product page links
-            "variant_id": variant_id,         # ← ADD numeric variant ID for cart
+            "id": product_id,                     # ← 🆕 FIX: Use actual product_id, not get('product_id')
+            "variant_id": variant_id,             # ← ADD numeric variant ID for cart
             "title": product.get('title', 'Unknown Product'),
             "price": price_display,
-            "image": product.get('image_url', ''),
+            "image": product.get('image_url', ''), # ← 🆕 FIX: Check field name
             "handle": product.get('url', '').split('/')[-1] if product.get('url') else '',
-            "url": product.get('url', ''),    # ← ADD direct product URL
+            "url": product.get('url', ''),        # ← ADD direct product URL
             "available": product.get('inStock', True)
         }
         
         carousel_products.append(carousel_product)
-        logger.info(f"🛒 Mapped product: {product.get('title')} → Product ID: {product.get('product_id')}, Variant ID: {variant_id}")
+        logger.info(f"🛒 Mapped product: {product.get('title')} → Product ID: {product_id}, Variant ID: {variant_id}")
     
     return carousel_products
 
+    
 def format_products_for_llm(mcp_products):
     """Format MCP products for LLM context with structured product data"""
     if not mcp_products:
