@@ -973,7 +973,6 @@ def generate_intelligent_follow_up(mcp_response, user_query, intent):
     }
 ################################### NEW FILES ################################
 # Replace these functions in chat_shopify.py
-
 def map_shopify_products_to_carousel(mcp_response, max_products=3):
     """Map Shopify MCP response to unified contract product_carousel format"""
     if not mcp_response or not mcp_response.get('products'):
@@ -981,6 +980,12 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
     
     products = mcp_response['products']
     carousel_products = []
+    
+    # 🆕 DEBUG: Log the first product structure
+    if products:
+        first_product = products[0]
+        logger.info(f"🔍 First product structure: {json.dumps(first_product, indent=2)}")
+        logger.info(f"🔍 Available keys: {list(first_product.keys())}")
     
     for product in products[:max_products]:
         # Extract VARIANT ID for cart operations
@@ -1018,29 +1023,56 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
         else:
             price_display = f"{currency} {price}"
         
-        # 🆕 FIX: Get the product_id correctly
-        product_id = product.get('product_id')  # This should be the GID
+        # 🆕 FIX: Extract product_id correctly based on actual MCP structure
+        product_id = None
+        
+        # Try multiple field names based on your MCP response structure
+        for id_field in ['product_id', 'id', 'gid']:
+            if product.get(id_field):
+                product_id = product.get(id_field)
+                logger.info(f"🔍 Found product ID in field '{id_field}': {product_id}")
+                break
+        
         if not product_id:
-            # Fallback: try 'id' field
-            product_id = product.get('id')
+            logger.warning(f"🛒 No product ID found for product: {product.get('title')}")
+            logger.warning(f"🛒 Available fields: {list(product.keys())}")
+            continue
+        
+        # 🆕 FIX: Extract image URL correctly
+        image_url = ""
+        for image_field in ['image_url', 'image', 'featured_image', 'img']:
+            if product.get(image_field):
+                image_url = product.get(image_field)
+                logger.info(f"🔍 Found image in field '{image_field}': {image_url[:50]}...")
+                break
+        
+        if not image_url:
+            logger.warning(f"🛒 No image found for product: {product.get('title')}")
+            logger.warning(f"🛒 Available fields: {list(product.keys())}")
+        
+        # 🆕 FIX: Extract URL correctly
+        product_url = ""
+        for url_field in ['url', 'product_url', 'link']:
+            if product.get(url_field):
+                product_url = product.get(url_field)
+                break
         
         carousel_product = {
-            "id": product_id,                     # ← 🆕 FIX: Use actual product_id, not get('product_id')
+            "id": product_id,                     # ← 🆕 FIX: Use extracted product_id
             "variant_id": variant_id,             # ← ADD numeric variant ID for cart
             "title": product.get('title', 'Unknown Product'),
             "price": price_display,
-            "image": product.get('image_url', ''), # ← 🆕 FIX: Check field name
-            "handle": product.get('url', '').split('/')[-1] if product.get('url') else '',
-            "url": product.get('url', ''),        # ← ADD direct product URL
+            "image": image_url,                   # ← 🆕 FIX: Use extracted image_url
+            "handle": product_url.split('/')[-1] if product_url else '',
+            "url": product_url,                   # ← ADD direct product URL
             "available": product.get('inStock', True)
         }
         
         carousel_products.append(carousel_product)
-        logger.info(f"🛒 Mapped product: {product.get('title')} → Product ID: {product_id}, Variant ID: {variant_id}")
+        logger.info(f"🛒 Mapped product: {product.get('title')} → Product ID: {product_id}, Variant ID: {variant_id}, Image: {image_url[:50] if image_url else 'None'}")
     
     return carousel_products
-
-    
+  
 def format_products_for_llm(mcp_products):
     """Format MCP products for LLM context with structured product data"""
     if not mcp_products:
