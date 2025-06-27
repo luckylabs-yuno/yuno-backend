@@ -756,14 +756,14 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str) ->
         ])
 
         # FIXED PROMPT with better examples and clearer instructions
-        enhanced_prompt = config['rewriter_prompt'].format(
+        enhanced_prompt = prompts_config['rewriter_prompt'].format(
             chat_log=chat_log,
             latest=latest
         )
 
 
         response = openai_client.chat.completions.create(
-            model=config['rewriter_model'],  # 🆕 Dynamic model
+            model=prompts_config['rewriter_model'],  # 🆕 Dynamic model
             messages=[
                 {
                     "role": "system", 
