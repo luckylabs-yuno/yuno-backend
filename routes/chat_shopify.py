@@ -20,6 +20,9 @@ from urllib.parse import urlparse
 # Import OpenAI v1.0+ style
 from openai import OpenAI
 
+# Import Anthropic Claude
+import anthropic
+
 shopify_chat_bp = Blueprint('shopify_chat', __name__)
 logger = logging.getLogger(__name__)
 
@@ -35,12 +38,16 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MIXPANEL_TOKEN = os.getenv("MIXPANEL_TOKEN")
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 
 # Supabase function URL for semantic search
 SUPABASE_FUNCTION_URL = f"{SUPABASE_URL}/rest/v1/rpc/yunosearch"
 
 # Initialize OpenAI client (v1.0+ style)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Initialize Anthropic Claude client
+anthropic_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
 # Initialize Mixpanel if token is available
 mp = None
@@ -1935,14 +1942,38 @@ Product {i+1}:
                 "full_prompt": focused_prompt
             })
         
-        # Call OpenAI (v1.0+ syntax)
-        completion = openai_client.chat.completions.create(
-            model=prompts_config['main_model'],  # 🆕 Dynamic model
-            messages=updated_messages,
-            temperature=0.5
-        )
+        if prompts_config['main_model'].startswith('claude'):
+            # Convert OpenAI-style messages to Claude format
+            claude_messages = []
+            for m in updated_messages:
+                if m["role"] == "system":
+                    # Claude uses 'system' as a separate argument, not in messages
+                    continue
+                elif m["role"] == "user":
+                    claude_messages.append({"role": "user", "content": m["content"]})
+                else:
+                    claude_messages.append({"role": "assistant", "content": m["content"]})
+            system_prompt = None
+            for m in updated_messages:
+                if m["role"] == "system":
+                    system_prompt = m["content"]
+                    break
+            claude_response = anthropic_client.messages.create(
+                model=prompts_config['main_model'],
+                max_tokens=1024,
+                temperature=0.5,
+                system=system_prompt,
+                messages=claude_messages,
+            )
+            raw_reply = claude_response.content[0].text.strip()
+        else:
+            completion = openai_client.chat.completions.create(
+                model=prompts_config['main_model'],
+                messages=updated_messages,
+                temperature=0.5
+            )
+            raw_reply = completion.choices[0].message.content.strip()
         
-        raw_reply = completion.choices[0].message.content.strip()
         sentry_sdk.set_extra("gpt_raw_reply", raw_reply)
         
         # Add debugging for LLM response
