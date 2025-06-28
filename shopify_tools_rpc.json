@@ -1,0 +1,166 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "search_shop_catalog",
+        "description": "Search for products from the online store, hosted on Shopify.\n\nThis tool can be used to search for products using natural language queries, specific filter criteria, or both.\n\nBest practices:\n- Searches return available_filters which can be used for refined follow-up searches\n- When filtering, use ONLY the filters from available_filters in follow-up searches\n- For specific filter searches (category, variant option, product type, etc.), use simple terms without the filter name (e.g., \"red\" not \"red color\")\n- For filter-specific searches (e.g., \"find burton in snowboards\" or \"show me all available products in gray / green color\"), use a two-step approach:\n  1. Perform a normal search to discover available filters\n  2. If relevant filters are returned, do a second search using the proper filter (productType, category, variantOption, etc.) with just the specific search term\n- Results are paginated, with initial results limited to improve experience\n- Use the after parameter with endCursor to fetch additional pages when users request more results\n\nThe response includes product details, available variants, filter options, and pagination info.\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "A natural language query."
+            },
+            "filters": {
+              "type": "array",
+              "description": "Filters to apply to the search. Only apply filters from the available_filters returned in a previous response.",
+              "items": {
+                "type": "object"
+              }
+            },
+            "country": {
+              "type": "string",
+              "description": "ISO 3166-1 alpha-2 country code for which to return localized results (e.g., 'US', 'CA', 'GB')."
+            },
+            "language": {
+              "type": "string",
+              "description": "ISO 639-1 language code for which to return localized results (e.g., 'EN', 'FR', 'DE')."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Maximum number of products to return. Defaults to 10, maximum is 250. For better user experience, use the default of 10 and ask the user if they want to see more results.",
+              "default": 10
+            },
+            "after": {
+              "type": "string",
+              "description": "Pagination cursor to fetch the next page of results. Use the endCursor from the previous response. Only use this when the user explicitly asks to see more results."
+            },
+            "context": {
+              "type": "string",
+              "description": "Additional information about the request such as user demographics, mood, location, or other relevant details that could help in tailoring the response appropriately."
+            }
+          },
+          "required": [
+            "query",
+            "context"
+          ]
+        }
+      },
+      {
+        "name": "get_cart",
+        "description": "Get the cart including items, shipping options, discount info, and checkout url for a given cart id",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cart_id": {
+              "type": "string",
+              "description": "Shopify cart id, formatted like: gid://shopify/Cart/c1-66330c6d752c2b242bb8487474949791?key=fa8913e951098d30d68033cf6b7b50f3"
+            }
+          },
+          "required": [
+            "cart_id"
+          ]
+        }
+      },
+      {
+        "name": "update_cart",
+        "description": "Perform updates to a cart, including adding/removing/updating line items, buyer information, shipping details, discount codes, gift cards and notes in one consolidated call. Shipping options become available after adding items and delivery address. When creating a new cart, only addItems is required.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cart_id": {
+              "type": "string"
+            },
+            "add_items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "update_items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "remove_line_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "buyer_identity": {
+              "type": "object"
+            },
+            "delivery_addresses_to_add": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "selected_delivery_options": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "discount_codes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "gift_card_codes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "search_shop_policies_and_faqs",
+        "description": "Used to get facts about the stores policies, products, or services.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "context": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "get_product_details",
+        "description": "Look up a product by ID and optionally specify variant options to select a specific variant.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "product_id": {
+              "type": "string"
+            },
+            "options": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "product_id"
+          ]
+        }
+      }
+    ]
+  }
+}
