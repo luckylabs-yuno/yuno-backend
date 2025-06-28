@@ -2183,7 +2183,7 @@ IMPORTANT: You MUST include these products in your 'product_carousel' array. Do 
 @shopify_chat_bp.route('/cart/add', methods=['POST', 'OPTIONS'])
 @require_widget_token
 def add_to_cart():
-    """Add product to cart using existing MCP service"""
+    """Add product to cart using direct Shopify cart API"""
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
     
@@ -2213,36 +2213,66 @@ def add_to_cart():
         if not shopify_domain:
             return jsonify({"error": "Shopify domain not configured"}), 404
         
-        # Use existing MCP service (same as product search)
+        # Use direct Shopify cart API
         try:
-            # Connect to MCP (same domain as product search)
-            shopify_mcp_service.connect_sync(shopify_domain)
+            cart_url = f"https://{shopify_domain}/cart/add.js"
             
-            # Call cart update method
-            cart_result = shopify_mcp_service.update_cart_sync(merchandise_id, quantity)
+            # Prepare cart data
+            cart_data = {
+                "id": int(merchandise_id),  # Shopify expects numeric variant ID
+                "quantity": quantity
+            }
             
-            if cart_result["success"]:
+            logger.info(f"🛒 Calling Shopify cart API: {cart_url}")
+            logger.info(f"🛒 Cart data: {cart_data}")
+            
+            # Make request to Shopify cart API
+            response = requests.post(
+                cart_url,
+                json=cart_data,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                timeout=10
+            )
+            
+            logger.info(f"🛒 Shopify cart API response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                cart_result = response.json()
                 logger.info(f"🛒 ✅ Cart operation successful")
+                logger.info(f"🛒 Cart response: {cart_result}")
+                
+                # Extract relevant data from Shopify response
+                product_title = cart_result.get('title', 'Product')
+                product_url = cart_result.get('url', '')
+                checkout_url = f"https://{shopify_domain}/cart"
+                
                 return jsonify({
                     "success": True,
                     "message": "Cart updated successfully",
-                    "cart": cart_result["cart"],
-                    "checkout_url": cart_result["checkout_url"],
+                    "cart": cart_result,
+                    "checkout_url": checkout_url,
                     "merchandise_id": merchandise_id,
-                    "quantity": quantity
+                    "quantity": quantity,
+                    "product_title": product_title,
+                    "product_url": product_url
                 })
             else:
-                logger.error(f"🛒 ❌ Cart operation failed: {cart_result['error']}")
+                error_text = response.text
+                logger.error(f"🛒 ❌ Shopify cart API failed: {response.status_code} - {error_text}")
                 return jsonify({
                     "error": "Cart update failed",
-                    "message": cart_result["error"]
+                    "message": f"Shopify API error: {response.status_code}",
+                    "details": error_text
                 }), 400
                 
-        except Exception as e:
-            logger.error(f"🛒 MCP connection/call failed: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"🛒 Shopify cart API request failed: {str(e)}")
             return jsonify({
                 "error": "Cart service unavailable",
-                "message": str(e)
+                "message": f"Network error: {str(e)}"
             }), 503
         
     except Exception as e:
