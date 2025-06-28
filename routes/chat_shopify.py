@@ -2278,7 +2278,7 @@ def add_to_cart():
                 
                 return jsonify({
                     "success": True,
-                    "message": "Cart updated successfully",
+                    "content": f'✅ Added "{product_title}" to your cart!<br><br><a href="{checkout_url}" target="_blank" style="background: var(--accent); color: #fff; padding: 10px 16px; border-radius: 8px; text-decoration: none; display: inline-block; font-weight: 600; margin-top: 8px;">🛒 View Cart & Checkout</a>',
                     "cart": cart_result,
                     "checkout_url": checkout_url,
                     "merchandise_id": merchandise_id,
