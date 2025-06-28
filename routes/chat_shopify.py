@@ -135,78 +135,78 @@ def get_default_rewriter_prompt() -> str:
     return """
     You are a JSON-only query analysis service. Analyze the user's query and determine intent, language, and data routing needs.
 
-        CRITICAL RULES:
-        1. Focus on the ACTUAL user intent, not assumed context
-        2. Product questions = product_search (even if asking "do you have", "show me", "what are")
-        3. Only classify as order_status if explicitly asking about existing orders or tracking
-        4. Rewrite queries to be clearer but keep the original intent
+    CRITICAL RULES:
+    1. Focus on the ACTUAL user intent, not assumed context
+    2. Product questions = product_search (even if asking "do you have", "show me", "what are")
+    3. Only classify as order_status if explicitly asking about existing orders or tracking
+    4. Rewrite queries to be clearer but keep the original intent
+    5. RESPOND WITH ONLY VALID JSON - NO EXPLANATIONS, NO MARKDOWN
 
-        Query Types & Examples:
+    Query Types & Examples:
 
-        **product_search** (USE THIS FOR):
-        - "Do you have trimmers under 2000?" → product_search
-        - "Show me beard trimmers" → product_search  
-        - "What trimmers are available?" → product_search
-        - "Any good trimmers for sale?" → product_search
-        - "I need a trimmer" → product_search
-        - "trimmer prices" → product_search
+    **product_search** (USE THIS FOR):
+    - "Do you have trimmers under 2000?" → product_search
+    - "Show me beard trimmers" → product_search  
+    - "What trimmers are available?" → product_search
+    - "Any good trimmers for sale?" → product_search
+    - "I need a trimmer" → product_search
+    - "trimmer prices" → product_search
 
-        **policy_question** (USE THIS FOR):
-        - "What is your return policy?" → policy_question
-        - "Shipping information" → policy_question
-        - "Do you offer warranty?" → policy_question
+    **policy_question** (USE THIS FOR):
+    - "What is your return policy?" → policy_question
+    - "Shipping information" → policy_question
+    - "Do you offer warranty?" → policy_question
 
-        **order_status** (ONLY USE FOR):
-        - "Where is my order?" → order_status
-        - "Track my order #123" → order_status  
-        - "Order delivery status" → order_status
-        - "When will my order arrive?" → order_status
+    **order_status** (ONLY USE FOR):
+    - "Where is my order?" → order_status
+    - "Track my order #123" → order_status  
+    - "Order delivery status" → order_status
+    - "When will my order arrive?" → order_status
 
-        **company_info** (USE THIS FOR):
-        - "About your company" → company_info
-        - "Contact information" → company_info
-        - "Who are you?" → company_info
+    **company_info** (USE THIS FOR):
+    - "About your company" → company_info
+    - "Contact information" → company_info
+    - "Who are you?" → company_info
 
-        **general_chat** (USE THIS FOR):
-        - "Hi", "Hello", "Thanks" → general_chat
-        - Unclear or ambiguous queries → general_chat
+    **general_chat** (USE THIS FOR):
+    - "Hi", "Hello", "Thanks" → general_chat
+    - Unclear or ambiguous queries → general_chat
 
-        ROUTING RULES:
-        - product_search → needs_mcp: true, needs_embeddings: false
-        - policy_question → needs_mcp: true, needs_embeddings: false  
-        - order_status → needs_mcp: true, needs_embeddings: false
-        - company_info → needs_mcp: false, needs_embeddings: true
-        - general_chat → needs_mcp: false, needs_embeddings: true
+    ROUTING RULES:
+    - product_search → needs_mcp: true, needs_embeddings: false
+    - policy_question → needs_mcp: true, needs_embeddings: false  
+    - order_status → needs_mcp: true, needs_embeddings: false
+    - company_info → needs_mcp: false, needs_embeddings: true
+    - general_chat → needs_mcp: false, needs_embeddings: true
 
-        For product_search, extract these parameters:
-        - product_features: ["trimmer", "beard", "electric"] 
-        - price_range: {{"max": 2000}} if mentioned
-        - category: "trimmer" if identifiable
+    For product_search, extract these parameters:
+    - product_features: ["trimmer", "beard", "electric"] 
+    - price_range: {"max": 2000} if mentioned
+    - category: "trimmer" if identifiable
 
-        Language Detection:
-        Detect the user's LATEST message language: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
+    Language Detection:
+    Detect the user's LATEST message language: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
 
-        Chat History:
-        {chat_log}
+    Chat History:
+    {chat_log}
 
-        User's Latest Message:
-        {latest}
+    User's Latest Message:
+    {latest}
 
-        ANALYZE THE QUERY CAREFULLY. Respond with valid JSON only:
+    ANALYZE THE QUERY CAREFULLY. Respond with ONLY valid JSON (no markdown, no explanations):
 
-        {{
-            "rewritten_prompt": "clear English version of user query",
-            "ques_lang": "detected_language", 
-            "query_type": "one_of_five_types",
-            "needs_mcp": true_or_false,
-            "needs_embeddings": true_or_false,
-            "search_parameters": {{
-                "product_features": ["feature1", "feature2"],
-                "price_range": {{"max": 2000}},
-                "category": "product_category"
-            }}
+    {{
+        "rewritten_prompt": "clear English version of user query",
+        "ques_lang": "detected_language", 
+        "query_type": "one_of_five_types",
+        "needs_mcp": true_or_false,
+        "needs_embeddings": true_or_false,
+        "search_parameters": {{
+            "product_features": ["feature1", "feature2"],
+            "price_range": {{"max": 2000}},
+            "category": "product_category"
         }}
- 
+    }}
     """
 
 
@@ -761,13 +761,14 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str, pr
             latest=latest
         )
 
+        logger.info(f"🔍 Rewriter prompt length: {len(enhanced_prompt)} characters")
 
         response = openai_client.chat.completions.create(
             model=prompts_config['rewriter_model'],  # 🆕 Dynamic model
             messages=[
                 {
                     "role": "system", 
-                    "content": "You are a precise query classifier. Focus on the user's actual intent, not assumed context. Product questions should always be classified as product_search."
+                    "content": "You are a precise query classifier. Focus on the user's actual intent, not assumed context. Product questions should always be classified as product_search. Respond with ONLY valid JSON."
                 },
                 {
                     "role": "user", 
@@ -778,41 +779,66 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str, pr
         )
 
         result_text = response.choices[0].message.content.strip()
+        logger.info(f"🔍 Raw rewriter response: {result_text[:200]}...")
         
-        # Extract JSON
+        # Try multiple JSON extraction strategies
+        result_json = None
+        
+        # Strategy 1: Try to find JSON with regex
         match = re.search(r'\{.*\}', result_text, re.DOTALL)
         if match:
             try:
                 result_json = json.loads(match.group(0))
-                
-                # Log the classification for debugging
-                logger.info(f"🔍 Query Classification:")
-                logger.info(f"🔍   Original: '{latest}'")
-                logger.info(f"🔍   Rewritten: '{result_json.get('rewritten_prompt', latest)}'")
-                logger.info(f"🔍   Type: {result_json.get('query_type', 'unknown')}")
-                logger.info(f"🔍   Language: {result_json.get('ques_lang', 'unknown')}")
-                logger.info(f"🔍   Needs MCP: {result_json.get('needs_mcp', False)}")
-                
-                return {
-                    "rewritten_prompt": result_json.get("rewritten_prompt", latest),
-                    "ques_lang": result_json.get("ques_lang", "english"),
-                    "query_type": result_json.get("query_type", "general_chat"),
-                    "needs_mcp": result_json.get("needs_mcp", False),
-                    "needs_embeddings": result_json.get("needs_embeddings", True),
-                    "search_parameters": result_json.get("search_parameters", {})
-                }
+                logger.info(f"🔍 JSON extracted successfully with regex")
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse rewriter JSON: {e}")
-                logger.error(f"Raw response: {result_text}")
-                # Fallback with manual classification
-                return classify_query_manually(latest)
-        else:
-            logger.error("No JSON found in rewriter response")
-            logger.error(f"Raw response: {result_text}")
+                logger.warning(f"🔍 Regex JSON parsing failed: {e}")
+                result_json = None
+        
+        # Strategy 2: If regex failed, try to clean and parse the entire response
+        if not result_json:
+            try:
+                # Remove any leading/trailing text that's not JSON
+                cleaned_text = result_text.strip()
+                # Try to find the start of JSON
+                start_idx = cleaned_text.find('{')
+                end_idx = cleaned_text.rfind('}')
+                
+                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                    json_text = cleaned_text[start_idx:end_idx + 1]
+                    result_json = json.loads(json_text)
+                    logger.info(f"🔍 JSON extracted successfully with manual parsing")
+                else:
+                    logger.warning(f"🔍 No JSON braces found in response")
+            except json.JSONDecodeError as e:
+                logger.warning(f"🔍 Manual JSON parsing failed: {e}")
+                result_json = None
+        
+        # Strategy 3: If still no JSON, try to extract just the key parts
+        if not result_json:
+            logger.warning(f"🔍 All JSON parsing strategies failed, using manual classification")
+            logger.warning(f"🔍 Full rewriter response: {result_text}")
             return classify_query_manually(latest)
+        
+        # Log the classification for debugging
+        logger.info(f"🔍 Query Classification:")
+        logger.info(f"🔍   Original: '{latest}'")
+        logger.info(f"🔍   Rewritten: '{result_json.get('rewritten_prompt', latest)}'")
+        logger.info(f"🔍   Type: {result_json.get('query_type', 'unknown')}")
+        logger.info(f"🔍   Language: {result_json.get('ques_lang', 'unknown')}")
+        logger.info(f"🔍   Needs MCP: {result_json.get('needs_mcp', False)}")
+        
+        return {
+            "rewritten_prompt": result_json.get("rewritten_prompt", latest),
+            "ques_lang": result_json.get("ques_lang", "english"),
+            "query_type": result_json.get("query_type", "general_chat"),
+            "needs_mcp": result_json.get("needs_mcp", False),
+            "needs_embeddings": result_json.get("needs_embeddings", True),
+            "search_parameters": result_json.get("search_parameters", {})
+        }
             
     except Exception as e:
         logger.warning("Enhanced query rewrite failed: %s", str(e))
+        logger.warning("Full exception details:", exc_info=True)
         return classify_query_manually(latest)
 
 def classify_query_manually(query: str) -> dict:
@@ -1810,11 +1836,9 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         # Add explicit product instructions if we have filtered products
         if filtered_products:
             product_instructions = f"""
-
-🚨 CRITICAL PRODUCT INSTRUCTION 🚨
+\n\n🚨 CRITICAL PRODUCT INSTRUCTION 🚨
 You have {len(filtered_products)} products available that match the user's query. You MUST include these products in your response using the 'product_carousel' field.
-
-Available products:
+\nPRODUCTS TO INCLUDE IN CAROUSEL:
 """
             for i, product in enumerate(filtered_products[:3]):
                 product_instructions += f"""
@@ -1827,10 +1851,13 @@ Product {i+1}:
 - URL: {product.get('url')}
 """
             product_instructions += f"""
-
-IMPORTANT: You MUST include these products in your 'product_carousel' array. Do not make up products or use placeholder data.
-"""
+\nIMPORTANT: You MUST include these products in your 'product_carousel' array. Do not make up products or use placeholder data.\n"""
             focused_prompt += product_instructions
+
+        # TEMPORARY LOG: Log the focused prompt sent to the LLM (truncated)
+        logger.info(f"🔍 [TEMP] LLM focused prompt (first 1000 chars): {focused_prompt[:1000]}")
+        if len(focused_prompt) > 1000:
+            logger.info(f"🔍 [TEMP] LLM focused prompt (truncated, total length: {len(focused_prompt)})")
 
         # Enhanced Shopify-specific instructions with MCP intelligence
         if is_shopify and mcp_context:
@@ -2459,4 +2486,68 @@ def shopify_debug_ask_simple():
             "error_type": type(e).__name__,
             "error_message": str(e),
             "debug_steps": debug_steps
+        }), 500
+
+@shopify_chat_bp.route('/debug/rewriter', methods=['POST', 'OPTIONS'])
+@require_widget_token
+def shopify_debug_rewriter():
+    """Debug endpoint specifically for testing the rewriter function"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
+    try:
+        # Get token data from middleware
+        site_id = request.token_data['site_id']
+        
+        # Get request data
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        messages = data.get("messages", [])
+        if not messages:
+            return jsonify({"error": "messages array required"}), 400
+        
+        # Get latest user message
+        latest_user_msg = next((m for m in reversed(messages) if m["role"] == "user"), None)
+        if not latest_user_msg:
+            return jsonify({"error": "No user message found"}), 400
+        
+        latest_user_query = latest_user_msg["content"]
+        
+        # Load prompts config
+        prompts_config = get_site_prompts_and_models(site_id)
+        
+        # Prepare context for query rewriting
+        recent_history = [m for m in messages if m["role"] in ("user", "assistant", "yuno")][-6:]
+        
+        logger.info(f"🔍 ===== REWRITER DEBUG START =====")
+        logger.info(f"🔍 Site ID: {site_id}")
+        logger.info(f"🔍 Latest query: '{latest_user_query}'")
+        logger.info(f"🔍 History length: {len(recent_history)}")
+        logger.info(f"🔍 Rewriter model: {prompts_config['rewriter_model']}")
+        
+        # Test the rewriter
+        rewrite_result = rewrite_query_with_context_and_language(recent_history, latest_user_query, prompts_config)
+        
+        logger.info(f"🔍 ===== REWRITER DEBUG END =====")
+        
+        return jsonify({
+            "status": "success",
+            "original_query": latest_user_query,
+            "rewrite_result": rewrite_result,
+            "debug_info": {
+                "site_id": site_id,
+                "rewriter_model": prompts_config['rewriter_model'],
+                "history_length": len(recent_history),
+                "prompt_length": len(prompts_config['rewriter_prompt'])
+            }
+        })
+        
+    except Exception as e:
+        logger.exception("Debug rewriter failed")
+        return jsonify({
+            "error": "Internal server error",
+            "error_type": type(e).__name__,
+            "error_message": str(e)
         }), 500
