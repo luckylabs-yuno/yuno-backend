@@ -1305,7 +1305,6 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         logger.info(f"🎯 Using prompts config for site {site_id}:")
         logger.info(f"🎯   - Rewriter model: {prompts_config['rewriter_model']}")
         logger.info(f"🎯   - Main model: {prompts_config['main_model']}")
-        logger.info(f"🎯   - Cache version: {prompts_config['cache_version']}")
         logger.info(f"🎯   - Has custom system prompt: {bool(prompts_config['system_prompt'] != SYSTEM_PROMPT)}")
         logger.info(f"🎯   - Has custom shopify instructions: {bool(prompts_config['shopify_instructions'])}")
 
