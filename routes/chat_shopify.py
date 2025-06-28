@@ -58,24 +58,10 @@ if MIXPANEL_TOKEN:
     except ImportError:
         logger.warning("Mixpanel not available - install with: pip install mixpanel")
 
-# Add caching mechanism
-prompt_cache = {}
-CACHE_DURATION = 300  # 5 minutes
-
 def get_site_prompts_and_models(site_id: str) -> Dict:
     """
-    Get all prompts and models for a site with caching
+    Get all prompts and models for a site (no caching)
     """
-    cache_key = f"prompts_{site_id}"
-    current_time = time.time()
-    
-    # Check cache first
-    if cache_key in prompt_cache:
-        cached_data = prompt_cache[cache_key]
-        if current_time - cached_data['timestamp'] < CACHE_DURATION:
-            logger.debug(f"Using cached prompts for site {site_id}")
-            return cached_data['data']
-    
     try:
         from supabase import create_client
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -103,18 +89,9 @@ def get_site_prompts_and_models(site_id: str) -> Dict:
                 # Models (fallback to defaults)
                 'rewriter_model': data.get('rewriter_model') or 'gpt-4o-mini-2024-07-18',
                 'main_model': data.get('main_model') or 'gpt-4.1-mini-2025-04-14',
-                
-                # Cache metadata
-                'cache_version': data.get('prompts_cache_version', 1)
             }
             
-            # Cache the result
-            prompt_cache[cache_key] = {
-                'data': prompts_and_models,
-                'timestamp': current_time
-            }
-            
-            logger.info(f"Loaded prompts for site {site_id} (cache version: {prompts_and_models['cache_version']})")
+            logger.info(f"Loaded prompts for site {site_id}")
             return prompts_and_models
         else:
             logger.warning(f"No custom prompts found for site {site_id}, using defaults")
