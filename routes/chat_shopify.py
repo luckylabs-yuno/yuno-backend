@@ -808,6 +808,7 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str, pr
                 return classify_query_manually(latest)
         else:
             logger.error("No JSON found in rewriter response")
+            logger.error(f"Raw response: {result_text}")
             return classify_query_manually(latest)
             
     except Exception as e:
@@ -824,11 +825,21 @@ def classify_query_manually(query: str) -> dict:
         needs_mcp = True
         needs_embeddings = False
         
-        # Extract price if mentioned
+        # Extract price if mentioned (support both "under 2000" and "under INR 2000")
         search_params = {}
-        price_match = re.search(r'under\s+(\d+)', query_lower)
-        if price_match:
-            search_params["price_range"] = {"max": int(price_match.group(1))}
+        price_patterns = [
+            r'under\s+(\d+)',  # "under 2000"
+            r'under\s+inr\s+(\d+)',  # "under INR 2000"
+            r'inr\s+(\d+)',  # "INR 2000"
+            r'rs\.?\s*(\d+)',  # "Rs 2000" or "Rs. 2000"
+            r'₹\s*(\d+)'  # "₹ 2000"
+        ]
+        
+        for pattern in price_patterns:
+            price_match = re.search(pattern, query_lower)
+            if price_match:
+                search_params["price_range"] = {"max": int(price_match.group(1))}
+                break
         
         # Extract product features
         features = []
@@ -836,6 +847,8 @@ def classify_query_manually(query: str) -> dict:
             features.append('trimmer')
         if 'beard' in query_lower:
             features.append('beard')
+        if 'razor' in query_lower:
+            features.append('razor')
         
         if features:
             search_params["product_features"] = features
@@ -1684,18 +1697,42 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 for product in carousel_products:
                     # Extract numeric price from formatted string
                     price_str = product.get('price', '0')
+                    price_num = 0
+                    
+                    # Handle different price formats
                     if price_str.startswith('₹'):
                         try:
                             price_num = float(price_str.replace('₹', '').replace(',', ''))
-                            if price_num <= max_budget:
-                                filtered_products.append(product)
-                                logger.info(f"🔍 ✅ Included: {product['title']} at ₹{price_num}")
-                            else:
-                                logger.info(f"🔍 ❌ Excluded: {product['title']} at ₹{price_num} (over budget)")
                         except ValueError:
                             logger.warning(f"🔍 ⚠️ Could not parse price: {price_str}")
-                            # Include anyway if we can't parse
-                            filtered_products.append(product)
+                    elif price_str.startswith('INR') or price_str.startswith('Rs'):
+                        try:
+                            price_match = re.search(r'(\d+(?:,\d+)*)', price_str)
+                            if price_match:
+                                price_num = float(price_match.group(1).replace(',', ''))
+                        except (ValueError, AttributeError):
+                            logger.warning(f"🔍 ⚠️ Could not parse price: {price_str}")
+                    else:
+                        try:
+                            price_num = float(price_str.replace(',', ''))
+                        except ValueError:
+                            logger.warning(f"🔍 ⚠️ Could not parse price: {price_str}")
+                    
+                    if price_num <= max_budget:
+                        filtered_products.append(product)
+                        logger.info(f"🔍 ✅ Included: {product['title']} at ₹{price_num}")
+                    else:
+                        logger.info(f"🔍 ❌ Excluded: {product['title']} at ₹{price_num} (over budget)")
+                
+                logger.info(f"🔍 Final filtered products: {len(filtered_products)}")
+                
+                # Fallback: if no products match budget, show cheapest ones
+                if len(filtered_products) == 0 and len(carousel_products) > 0:
+                    logger.info(f"🔍 No products within budget, showing cheapest options")
+                    # Sort by price and take the cheapest 3
+                    sorted_products = sorted(carousel_products, key=lambda x: float(x.get('price', '0').replace('₹', '').replace(',', '')))
+                    filtered_products = sorted_products[:3]
+                    logger.info(f"🔍 Showing {len(filtered_products)} cheapest products instead")
             else:
                 filtered_products = carousel_products
             
