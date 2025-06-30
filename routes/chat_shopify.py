@@ -1228,6 +1228,57 @@ def validate_llm_products(llm_response, filtered_products):
     return llm_response
 
 
+# === Claude/MCP Tool-Calling Helper Functions ===
+def build_rewriter_prompt(user_query, messages, tools_list):
+    return f'''
+You are an AI assistant for a Shopify store. Here is the user's message: "{user_query}"
+
+Available tools:
+{json.dumps(tools_list, indent=2)}
+
+Based on the user's message and the available tools, decide which tool to use and what arguments to provide.
+Respond with a JSON object:
+{{
+  "tool_name": "...",
+  "arguments": {{ ... }},
+  "intent": "...",
+  "language": "..."
+}}
+'''
+
+def call_claude_rewriter(prompt, openai_client):
+    response = openai_client.chat.completions.create(
+        model="claude-3-5-haiku-20241022",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1
+    )
+    match = re.search(r"\{.*\}", response.choices[0].message.content, re.DOTALL)
+    return json.loads(match.group(0)) if match else {}
+
+def build_main_prompt(user_query, conversation_history, tool_result, intent, language):
+    history_str = "\n".join([f"{m['role']}: {m['content']}" for m in conversation_history])
+    return f'''
+You are Yuno, a Shopify AI assistant. Here is the conversation so far:
+{history_str}
+
+The user intent is: {intent}
+The user's language is: {language}
+
+Here is the result from the tool call:
+{json.dumps(tool_result, indent=2)}
+
+Based on all this, generate a structured JSON response with content, product_carousel, quick_replies, leads, etc. (see unified message contract).
+'''
+
+def call_claude_main(prompt, openai_client):
+    response = openai_client.chat.completions.create(
+        model="claude-3-5-haiku-20241022",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5
+    )
+    match = re.search(r"\{.*\}", response.choices[0].message.content, re.DOTALL)
+    return json.loads(match.group(0)) if match else {}
+
 # Enhanced /shopify/ask endpoint
 @shopify_chat_bp.route('/ask', methods=['POST', 'OPTIONS'])
 @require_widget_token

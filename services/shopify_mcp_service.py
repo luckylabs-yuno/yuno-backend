@@ -172,19 +172,55 @@ class ShopifyMCPService:
                         numeric_id = product_id.split("Product/")[-1]
                         product_url = f"https://{self.shop_domain}/products/{numeric_id}"
                 
+                # Ensure tags is a list of strings
+                tags = product.get("tags", [])
+                if not isinstance(tags, list):
+                    tags = []
+                tags = [str(t) for t in tags]
+                
+                # Ensure product_type is a string
+                product_type = product.get("product_type", "")
+                if not isinstance(product_type, str):
+                    product_type = str(product_type)
+                
+                # Ensure all values in transformed_product are of the correct type
+                # id, title, description, image, url, product_type: str
+                # price, price_max: float or None
+                # currency: str
+                # inStock: bool
+                # tags: list of str
+                # variants: list
+                # If any value is a dict, convert to string or set to default
+                
+                id_val = product.get("product_id", f"unknown-{i}")
+                if isinstance(id_val, dict):
+                    id_val = str(id_val)
+                title_val = product.get("title", "Unknown Product")
+                if isinstance(title_val, dict):
+                    title_val = str(title_val)
+                description_val = product.get("description", "")
+                if isinstance(description_val, dict):
+                    description_val = str(description_val)
+                image_val = product.get("image_url", "")
+                if isinstance(image_val, dict):
+                    image_val = str(image_val)
+                url_val = product_url
+                if isinstance(url_val, dict):
+                    url_val = str(url_val)
+                
                 transformed_product = {
-                    "id": product.get("product_id", f"unknown-{i}"),
-                    "title": product.get("title", "Unknown Product"),
-                    "description": product.get("description", ""),
+                    "id": id_val,
+                    "title": title_val,
+                    "description": description_val,
                     "price": min_price,
                     "price_max": max_price if max_price != min_price else None,
                     "currency": currency,
                     "inStock": in_stock,
-                    "image": product.get("image_url", ""),
-                    "url": product_url,
-                    "tags": product.get("tags", []),
-                    "product_type": product.get("product_type", ""),
-                    "variants": variants
+                    "image": image_val,
+                    "url": url_val,
+                    "tags": tags,
+                    "product_type": product_type,
+                    "variants": variants if isinstance(variants, list) else []
                 }
                 
                 products.append(transformed_product)
@@ -255,25 +291,6 @@ class ShopifyMCPService:
             logger.warning(f"📋 Unexpected policy data type: {type(data)}")
             return {"policies": {"raw": str(data)}, "error": None}
     
-    def update_cart_sync(self, cart_id: Optional[str] = None, add_items: Optional[List[Dict]] = None) -> Dict:
-        """
-        Update cart using correct schema
-        
-        Schema: update_cart
-        Required: (none - all optional)
-        Optional: cart_id, add_items, update_items, remove_line_ids, etc.
-        """
-        logger.info(f"🛒 Updating cart")
-        
-        arguments = {}
-        if cart_id:
-            arguments["cart_id"] = cart_id
-        if add_items:
-            arguments["add_items"] = add_items
-            
-        result = self._call_mcp_tool("update_cart", arguments)
-        return result
-    
     def get_cart_sync(self, cart_id: str) -> Dict:
         """
         Get cart using correct schema
@@ -286,56 +303,6 @@ class ShopifyMCPService:
         arguments = {"cart_id": cart_id}
         result = self._call_mcp_tool("get_cart", arguments)
         return result
-
-    def search_with_filters(self, query: str, available_filters: List[Dict], price_max: Optional[int] = None) -> Dict:
-        """
-        Perform a filtered search using available filters from previous search
-        This is the CORRECT way to filter according to Shopify MCP schema
-        """
-        logger.info(f"🔍 Performing filtered search for: '{query}'")
-        
-        # Build filters array using available_filters structure
-        filters_to_apply = []
-        
-        if price_max and available_filters:
-            # Look for price filter in available_filters
-            for filter_item in available_filters:
-                if filter_item.get("label") == "Price":
-                    # Use the exact filter structure from available_filters
-                    price_filter = {
-                        "price": {
-                            "min": 0,
-                            "max": price_max
-                        }
-                    }
-                    filters_to_apply.append(price_filter)
-                    logger.info(f"🔍 Added price filter: max {price_max}")
-                    break
-        
-        # Perform search with filters
-        arguments = {
-            "query": query,
-            "context": f"Filtered search for: {query}",
-            "limit": 10
-        }
-        
-        if filters_to_apply:
-            arguments["filters"] = filters_to_apply
-        
-        result = self._call_mcp_tool("search_shop_catalog", arguments)
-        
-        # Process result same as search_products_sync
-        if result["error"]:
-            return {
-                "products": [],
-                "pagination": {},
-                "filters": [],
-                "error": result["error"]
-            }
-        
-        # Transform and return (same logic as search_products_sync)
-        return self._transform_search_results(result["data"])
-
 
     def update_cart_sync(self, merchandise_id: str, quantity: int = 1) -> Dict:
         """
@@ -401,7 +368,15 @@ class ShopifyMCPService:
                         
                         # Extract cart data
                         cart_data = parsed_content.get("cart", {})
-                        checkout_url = cart_data.get("checkout_url")
+                        # Extract and sanitize checkout_url
+                        checkout_url_val = cart_data.get("checkout_url")
+                        if isinstance(checkout_url_val, str) or checkout_url_val is None:
+                            checkout_url = checkout_url_val
+                        else:
+                            checkout_url = str(checkout_url_val)
+                        # Also ensure cart_data['checkout_url'] is a string or None
+                        if "checkout_url" in cart_data and not (isinstance(cart_data["checkout_url"], str) or cart_data["checkout_url"] is None):
+                            cart_data["checkout_url"] = str(cart_data["checkout_url"])
                         
                         logger.info(f"🛒 ✅ Cart updated successfully")
                         logger.info(f"🛒 Checkout URL: {checkout_url}")
@@ -413,10 +388,21 @@ class ShopifyMCPService:
                         logger.error(f"🛒 Failed to parse cart response: {e}")
                         continue
             
+            # Aggressive sanitizer for cart_data
+            def sanitize_value(v):
+                if isinstance(v, (str, int, float, bool)) or v is None:
+                    return v
+                else:
+                    return str(v)
+            import json as _json
+            sanitized_cart_data = None
+            if cart_data:
+                sanitized_cart_data = {k: sanitize_value(v) for k, v in cart_data.items()}
+            cart_str = _json.dumps(sanitized_cart_data) if sanitized_cart_data is not None else None
             return {
                 "success": True,
                 "error": None,
-                "cart": cart_data,
+                "cart": cart_str,
                 "checkout_url": checkout_url,
                 "merchandise_id": merchandise_id,
                 "quantity": quantity
@@ -430,3 +416,38 @@ class ShopifyMCPService:
                 "cart": None,
                 "checkout_url": None
             }    
+
+    def tools_list_sync(self) -> dict:
+        """
+        Get the list of available tools from the MCP server.
+        """
+        if not self.mcp_url:
+            raise ValueError("MCP not connected. Call connect_sync first.")
+
+        self.call_count += 1
+        request_body = {
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "id": self.call_count,
+            "params": {}
+        }
+        try:
+            response = requests.post(
+                self.mcp_url,
+                json=request_body,
+                headers={"Content-Type": "application/json"},
+                timeout=30,
+                verify=True
+            )
+            if response.status_code != 200:
+                logger.error(f"🔧 HTTP Error {response.status_code}: {response.text}")
+                return {"error": f"HTTP {response.status_code}", "tools": []}
+            data = response.json()
+            if "error" in data:
+                logger.error(f"🔧 MCP Error: {data['error']}")
+                return {"error": data["error"], "tools": []}
+            tools = data.get("result", {}).get("tools", [])
+            return {"error": None, "tools": tools}
+        except Exception as e:
+            logger.error(f"🔧 MCP tools/list failed: {e}")
+            return {"error": str(e), "tools": []}    
