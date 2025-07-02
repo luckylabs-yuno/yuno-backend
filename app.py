@@ -92,6 +92,7 @@ from routes.dashboard import dashboard_bp
 from routes.chat import chat_bp
 from routes.chat_shopify import shopify_chat_bp
 from routes.shopify import shopify_bp
+from routes.responses_api_backend import responses_api_bp
 
 # Register blueprints (no duplicates)
 app.register_blueprint(auth_bp, url_prefix='/widget')
@@ -100,6 +101,7 @@ app.register_blueprint(dashboard_bp)
 app.register_blueprint(chat_bp, url_prefix='/')
 app.register_blueprint(shopify_chat_bp, url_prefix='/shopify')
 app.register_blueprint(shopify_bp, url_prefix='/shopify')
+app.register_blueprint(responses_api_bp, url_prefix='/responses-api')
 
 
 # Preflight handler - FIXED VERSION
