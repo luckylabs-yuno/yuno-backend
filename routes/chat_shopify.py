@@ -906,8 +906,9 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
             continue
         
         # Extract price information
-        price = product.get('price', 0)
-        currency = product.get('currency', 'INR')
+        price_range = product.get('price_range', {})
+        price = float(price_range.get('min', 0)) if price_range.get('min') else 0
+        currency = price_range.get('currency', 'INR')
         
         # Format price
         if currency == 'INR':
@@ -1028,21 +1029,23 @@ def debug_product_mapping(mcp_context, carousel_products):
     
     for i, product in enumerate(mcp_products[:3]):
         logger.info(f"🔍 MCP Product {i+1}:")
-        logger.info(f"🔍   - ID: {product.get('id')}")
+        logger.info(f"🔍   - ID: {product.get('product_id')}")
         logger.info(f"🔍   - Title: {product.get('title')}")
-        logger.info(f"🔍   - Price: {product.get('price')} {product.get('currency')}")
+        price_range = product.get('price_range', {})
+        logger.info(f"🔍   - Price: {price_range.get('min')} {price_range.get('currency')}")
         logger.info(f"🔍   - InStock: {product.get('inStock')}")
-        logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
+        logger.info(f"🔍   - Image: {product.get('image_url', '')[:50]}...")
     
     logger.info(f"🔍 Carousel Products Count: {len(carousel_products)}")
     
     for i, product in enumerate(carousel_products):
         logger.info(f"🔍 Carousel Product {i+1}:")
-        logger.info(f"🔍   - ID: {product.get('id')}")
+        logger.info(f"🔍   - ID: {product.get('product_id')}")
         logger.info(f"🔍   - Title: {product.get('title')}")
-        logger.info(f"🔍   - Price: {product.get('price')}")
+        price_range = product.get('price_range', {})
+        logger.info(f"🔍   - Price: {price_range.get('min')} {price_range.get('currency')}")
         logger.info(f"🔍   - Available: {product.get('available')}")
-        logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
+        logger.info(f"🔍   - Image: {product.get('image_url', '')[:50]}...")
     
     logger.info(f"🔍 ===== PRODUCT MAPPING DEBUG END =====")
 
