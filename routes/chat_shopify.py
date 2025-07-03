@@ -13,7 +13,6 @@ from services.domain_service import DomainService
 from services.rate_limit_service import RateLimitService
 from models.site import SiteModel
 from utils.helpers import LoggingHelpers, ResponseHelpers
-import sentry_sdk
 from services.shopify_mcp_service import ShopifyMCPService
 from urllib.parse import urlparse
 
@@ -28,13 +27,12 @@ jwt_service = JWTService()
 domain_service = DomainService()
 rate_limit_service = RateLimitService()
 site_model = SiteModel()
-shopify_mcp_service = ShopifyMCPService()  # ADD THIS LINE
+shopify_mcp_service = ShopifyMCPService()
 
 # Environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-MIXPANEL_TOKEN = os.getenv("MIXPANEL_TOKEN")
 
 # Supabase function URL for semantic search
 SUPABASE_FUNCTION_URL = f"{SUPABASE_URL}/rest/v1/rpc/yunosearch"
@@ -42,175 +40,11 @@ SUPABASE_FUNCTION_URL = f"{SUPABASE_URL}/rest/v1/rpc/yunosearch"
 # Initialize OpenAI client (v1.0+ style)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Initialize Mixpanel if token is available
-mp = None
-if MIXPANEL_TOKEN:
-    try:
-        from mixpanel import Mixpanel
-        mp = Mixpanel(MIXPANEL_TOKEN)
-    except ImportError:
-        logger.warning("Mixpanel not available - install with: pip install mixpanel")
+# Hardcoded configuration - no database fetching for prompts/models
+HARDCODED_REWRITER_MODEL = 'gpt-4o-mini-2024-07-18'
+HARDCODED_MAIN_MODEL = 'gpt-4.1-mini-2025-04-14'
 
-# Add caching mechanism
-prompt_cache = {}
-CACHE_DURATION = 300  # 5 minutes
-
-def get_site_prompts_and_models(site_id: str) -> Dict:
-    """
-    Get all prompts and models for a site with caching
-    """
-    cache_key = f"prompts_{site_id}"
-    current_time = time.time()
-    
-    # Check cache first
-    if cache_key in prompt_cache:
-        cached_data = prompt_cache[cache_key]
-        if current_time - cached_data['timestamp'] < CACHE_DURATION:
-            logger.debug(f"Using cached prompts for site {site_id}")
-            return cached_data['data']
-    
-    try:
-        from supabase import create_client
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        
-        # Fetch all prompt and model data
-        resp = supabase\
-            .table("custom_detail")\
-            .select("site_prompt, system_prompt, system_prompt_2, rewriter_prompt, shopify_instructions, rewriter_model, main_model, prompts_cache_version")\
-            .eq("site_id", site_id)\
-            .single()\
-            .execute()
-        
-        if resp.data:
-            data = resp.data
-            
-            # Build prompts dict with fallbacks to defaults
-            prompts_and_models = {
-                # Prompts (fallback to hardcoded defaults if None)
-                'system_prompt': data.get('system_prompt') or SYSTEM_PROMPT,
-                'system_prompt_2': data.get('system_prompt_2') or SYSTEM_PROMPT_2,
-                'rewriter_prompt': data.get('rewriter_prompt') or get_default_rewriter_prompt(),
-                'custom_prompt': data.get('site_prompt'),  # Can be None
-                'shopify_instructions': data.get('shopify_instructions'),  # Can be None
-                
-                # Models (fallback to defaults)
-                'rewriter_model': data.get('rewriter_model') or 'gpt-4o-mini-2024-07-18',
-                'main_model': data.get('main_model') or 'gpt-4.1-mini-2025-04-14',
-                
-                # Cache metadata
-                'cache_version': data.get('prompts_cache_version', 1)
-            }
-            
-            # Cache the result
-            prompt_cache[cache_key] = {
-                'data': prompts_and_models,
-                'timestamp': current_time
-            }
-            
-            logger.info(f"Loaded prompts for site {site_id} (cache version: {prompts_and_models['cache_version']})")
-            return prompts_and_models
-        else:
-            logger.warning(f"No custom prompts found for site {site_id}, using defaults")
-            return get_default_prompts_and_models()
-            
-    except Exception as e:
-        logger.warning(f"Failed to load prompts for site {site_id}: {e}, using defaults")
-        return get_default_prompts_and_models()
-
-def get_default_prompts_and_models() -> Dict:
-    """Fallback to hardcoded defaults"""
-    return {
-        'system_prompt': SYSTEM_PROMPT,
-        'system_prompt_2': SYSTEM_PROMPT_2,
-        'rewriter_prompt': get_default_rewriter_prompt(),
-        'custom_prompt': None,
-        'shopify_instructions': None,
-        'rewriter_model': 'gpt-4o-mini-2024-07-18',
-        'main_model': 'gpt-4.1-mini-2025-04-14',
-        'cache_version': 0
-    }
-
-def get_default_rewriter_prompt() -> str:
-    """Extract current rewriter prompt as default"""
-    return """
-    You are a JSON-only query analysis service. Analyze the user's query and determine intent, language, and data routing needs.
-
-    CRITICAL RULES:
-    1. Focus on the ACTUAL user intent, not assumed context
-    2. Product questions = product_search (even if asking "do you have", "show me", "what are")
-    3. Only classify as order_status if explicitly asking about existing orders or tracking
-    4. Rewrite queries to be clearer but keep the original intent
-    5. RESPOND WITH ONLY VALID JSON - NO EXPLANATIONS, NO MARKDOWN
-
-    Query Types & Examples:
-
-    **product_search** (USE THIS FOR):
-    - "Do you have trimmers under 2000?" → product_search
-    - "Show me beard trimmers" → product_search  
-    - "What trimmers are available?" → product_search
-    - "Any good trimmers for sale?" → product_search
-    - "I need a trimmer" → product_search
-    - "trimmer prices" → product_search
-
-    **policy_question** (USE THIS FOR):
-    - "What is your return policy?" → policy_question
-    - "Shipping information" → policy_question
-    - "Do you offer warranty?" → policy_question
-
-    **order_status** (ONLY USE FOR):
-    - "Where is my order?" → order_status
-    - "Track my order #123" → order_status  
-    - "Order delivery status" → order_status
-    - "When will my order arrive?" → order_status
-
-    **company_info** (USE THIS FOR):
-    - "About your company" → company_info
-    - "Contact information" → company_info
-    - "Who are you?" → company_info
-
-    **general_chat** (USE THIS FOR):
-    - "Hi", "Hello", "Thanks" → general_chat
-    - Unclear or ambiguous queries → general_chat
-
-    ROUTING RULES:
-    - product_search → needs_mcp: true, needs_embeddings: false
-    - policy_question → needs_mcp: true, needs_embeddings: false  
-    - order_status → needs_mcp: true, needs_embeddings: false
-    - company_info → needs_mcp: false, needs_embeddings: true
-    - general_chat → needs_mcp: false, needs_embeddings: true
-
-    For product_search, extract these parameters:
-    - product_features: ["trimmer", "beard", "electric"] 
-    - price_range: {"max": 2000} if mentioned
-    - category: "trimmer" if identifiable
-
-    Language Detection:
-    Detect the user's LATEST message language: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
-
-    Chat History:
-    {chat_log}
-
-    User's Latest Message:
-    {latest}
-
-    ANALYZE THE QUERY CAREFULLY. Respond with ONLY valid JSON (no markdown, no explanations):
-
-    {{
-        "rewritten_prompt": "clear English version of user query",
-        "ques_lang": "detected_language", 
-        "query_type": "one_of_five_types",
-        "needs_mcp": true_or_false,
-        "needs_embeddings": true_or_false,
-        "search_parameters": {{
-            "product_features": ["feature1", "feature2"],
-            "price_range": {{"max": 2000}},
-            "category": "product_category"
-        }}
-    }}
-    """
-
-
-
+# AI Prompts - All hardcoded defaults
 # AI Prompts
 SYSTEM_PROMPT = """
 # Yuno AI Assistant - Comprehensive System Prompt
@@ -556,7 +390,6 @@ You must reply **only** with a single JSON object that matches one of the schema
 Remember: Your goal is to guide users toward products, capture leads, and provide excellent customer experience through the enhanced interactive features!
 """
 
-
 SYSTEM_PROMPT_2 = """
 You must respond with ONLY valid JSON that supports the unified message contract.
 
@@ -617,6 +450,106 @@ ONLY output valid JSON. No markdown, no explanations.
 """
 
 
+REWRITER_PROMPT = """
+You are a JSON-only query analysis service. Analyze the user's query and determine intent, language, and data routing needs.
+
+    CRITICAL RULES:
+    1. Focus on the ACTUAL user intent, not assumed context
+    2. Product questions = product_search (even if asking "do you have", "show me", "what are")
+    3. Only classify as order_status if explicitly asking about existing orders or tracking
+    4. Rewrite queries to be clearer but keep the original intent
+    5. RESPOND WITH ONLY VALID JSON - NO EXPLANATIONS, NO MARKDOWN
+
+    Query Types & Examples:
+
+    **product_search** (USE THIS FOR):
+    - "Do you have trimmers under 2000?" → product_search
+    - "Show me beard trimmers" → product_search  
+    - "What trimmers are available?" → product_search
+    - "Any good trimmers for sale?" → product_search
+    - "I need a trimmer" → product_search
+    - "trimmer prices" → product_search
+
+    **policy_question** (USE THIS FOR):
+    - "What is your return policy?" → policy_question
+    - "Shipping information" → policy_question
+    - "Do you offer warranty?" → policy_question
+
+    **order_status** (ONLY USE FOR):
+    - "Where is my order?" → order_status
+    - "Track my order #123" → order_status  
+    - "Order delivery status" → order_status
+    - "When will my order arrive?" → order_status
+
+    **company_info** (USE THIS FOR):
+    - "About your company" → company_info
+    - "Contact information" → company_info
+    - "Who are you?" → company_info
+
+    **general_chat** (USE THIS FOR):
+    - "Hi", "Hello", "Thanks" → general_chat
+    - Unclear or ambiguous queries → general_chat
+
+    ROUTING RULES:
+    - product_search → needs_mcp: true, needs_embeddings: false
+    - policy_question → needs_mcp: true, needs_embeddings: false  
+    - order_status → needs_mcp: true, needs_embeddings: false
+    - company_info → needs_mcp: false, needs_embeddings: true
+    - general_chat → needs_mcp: false, needs_embeddings: true
+
+    For product_search, extract these parameters:
+    - product_features: ["trimmer", "beard", "electric"] 
+    - price_range: {"max": 2000} if mentioned
+    - category: "trimmer" if identifiable
+
+    Language Detection:
+    Detect the user's LATEST message language: english, spanish, hindi, bengali, arabic, french, german, portuguese, italian
+
+    Chat History:
+    {chat_log}
+
+    User's Latest Message:
+    {latest}
+
+    ANALYZE THE QUERY CAREFULLY. Respond with ONLY valid JSON (no markdown, no explanations):
+
+    {{
+        "rewritten_prompt": "clear English version of user query",
+        "ques_lang": "detected_language", 
+        "query_type": "one_of_five_types",
+        "needs_mcp": true_or_false,
+        "needs_embeddings": true_or_false,
+        "search_parameters": {{
+            "product_features": ["feature1", "feature2"],
+            "price_range": {{"max": 2000}},
+            "category": "product_category"
+        }}
+    }}
+"""
+
+def get_site_custom_prompt(site_id: str) -> Optional[str]:
+    """
+    Get only custom prompt for a site from Supabase
+    All other prompts are hardcoded
+    """
+    try:
+        from supabase import create_client
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Fetch only custom prompt from Supabase
+        resp = supabase\
+            .table("custom_detail")\
+            .select("site_prompt")\
+            .eq("site_id", site_id)\
+            .single()\
+            .execute()
+        
+        return resp.data.get('site_prompt') if resp.data else None
+            
+    except Exception as e:
+        logger.warning(f"Failed to load custom prompt for site {site_id}: {e}")
+        return None
+
 # Utility Functions
 def get_embedding(text: str) -> List[float]:
     """Generate OpenAI embedding for text"""
@@ -656,20 +589,9 @@ def semantic_search(query_embedding: List[float], site_id: str) -> List[dict]:
         return []
 
 def insert_chat_message(
-    site_id, session_id, user_id, page_url,
-    role, content,
-    raw_json_output=None,
-    *,  # everything after * is optional & named
-    lang=None,
-    confidence=None,
-    intent=None,
-    tokens_used=None,
-    follow_up=None,
-    follow_up_prompt=None,
-    sentiment=None,
-    compliance_flag=None
+    site_id, session_id, user_id, page_url, role, content, raw_json_output=None
 ):
-    """Write one chat turn into chat_history (Supabase)"""
+    """Write chat message to Supabase"""
     try:
         payload = {
             "site_id": site_id,
@@ -681,36 +603,14 @@ def insert_chat_message(
             "timestamp": datetime.utcnow().isoformat()
         }
 
-        # Core JSON blob for audit
         if raw_json_output is not None:
             payload["raw_json_output"] = raw_json_output
-
-        # New analytic columns (insert only if not None)
-        if lang is not None: 
-            payload["lang"] = lang
-        if confidence is not None: 
-            payload["answer_confidence"] = confidence
-        if intent is not None: 
-            payload["intent"] = intent
-        if tokens_used is not None: 
-            payload["tokens_used"] = tokens_used
-        if follow_up is not None: 
-            payload["follow_up"] = follow_up
-        if follow_up_prompt is not None: 
-            payload["follow_up_prompt"] = follow_up_prompt
-        if sentiment is not None: 
-            payload["user_sentiment"] = sentiment
-        if compliance_flag is not None: 
-            payload["compliance_red_flag"] = compliance_flag
 
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "application/json"
         }
-
-        logger.debug("Inserting chat message into Supabase: %s", payload)
-        sentry_sdk.set_extra(f"supabase_chat_insert_{role}", payload)
 
         response = requests.post(
             f"{SUPABASE_URL}/rest/v1/chat_history",
@@ -725,9 +625,6 @@ def insert_chat_message(
 def insert_lead(lead_data):
     """Insert lead data into Supabase"""
     try:
-        logger.debug("Inserting lead: %s", lead_data)
-        sentry_sdk.set_extra("supabase_lead_data", lead_data)
-
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -744,10 +641,10 @@ def insert_lead(lead_data):
     except Exception as e:
         logger.error(f"Error inserting lead: {str(e)}")
 
-
-def rewrite_query_with_context_and_language(history: List[dict], latest: str, prompts_config: dict) -> dict:
+def rewrite_query_with_context_and_language(history: List[dict], latest: str) -> dict:
     """
-    Enhanced query rewriter with better intent detection
+    Rewrite query with context and detect language/intent
+    Uses hardcoded rewriter prompt and model only
     """
     try:
         chat_log = "\n".join([
@@ -755,173 +652,78 @@ def rewrite_query_with_context_and_language(history: List[dict], latest: str, pr
             for m in history
         ])
 
-        # FIXED PROMPT with better examples and clearer instructions
-        enhanced_prompt = prompts_config['rewriter_prompt'].format(
+        # Use hardcoded rewriter prompt
+        enhanced_prompt = REWRITER_PROMPT.format(
             chat_log=chat_log,
             latest=latest
         )
 
-        logger.info(f"🔍 Rewriter prompt length: {len(enhanced_prompt)} characters")
-
+        # Use hardcoded rewriter model
         response = openai_client.chat.completions.create(
-            model=prompts_config['rewriter_model'],  # 🆕 Dynamic model
+            model=HARDCODED_REWRITER_MODEL,
             messages=[
                 {
                     "role": "system", 
-                    "content": "You are a precise query classifier. Focus on the user's actual intent, not assumed context. Product questions should always be classified as product_search. Respond with ONLY valid JSON."
+                    "content": "You are a precise query classifier. Respond with ONLY valid JSON."
                 },
                 {
                     "role": "user", 
                     "content": enhanced_prompt
                 }
             ],
-            temperature=0.1  # Lower temperature for more consistent classification
+            temperature=0.1
         )
 
         result_text = response.choices[0].message.content.strip()
-        logger.info(f"🔍 Raw rewriter response: {result_text[:200]}...")
         
-        # Try multiple JSON extraction strategies
-        result_json = None
-        
-        # Strategy 1: Try to find JSON with regex
+        # Extract JSON from response
         match = re.search(r'\{.*\}', result_text, re.DOTALL)
         if match:
             try:
                 result_json = json.loads(match.group(0))
-                logger.info(f"🔍 JSON extracted successfully with regex")
-            except json.JSONDecodeError as e:
-                logger.warning(f"🔍 Regex JSON parsing failed: {e}")
-                result_json = None
+                return {
+                    "rewritten_prompt": result_json.get("rewritten_prompt", latest),
+                    "ques_lang": result_json.get("ques_lang", "english"),
+                    "query_type": result_json.get("query_type", "general_chat"),
+                    "needs_mcp": result_json.get("needs_mcp", False),
+                    "needs_embeddings": result_json.get("needs_embeddings", True),
+                    "search_parameters": result_json.get("search_parameters", {})
+                }
+            except json.JSONDecodeError:
+                pass
         
-        # Strategy 2: If regex failed, try to clean and parse the entire response
-        if not result_json:
-            try:
-                # Remove any leading/trailing text that's not JSON
-                cleaned_text = result_text.strip()
-                # Try to find the start of JSON
-                start_idx = cleaned_text.find('{')
-                end_idx = cleaned_text.rfind('}')
-                
-                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                    json_text = cleaned_text[start_idx:end_idx + 1]
-                    result_json = json.loads(json_text)
-                    logger.info(f"🔍 JSON extracted successfully with manual parsing")
-                else:
-                    logger.warning(f"🔍 No JSON braces found in response")
-            except json.JSONDecodeError as e:
-                logger.warning(f"🔍 Manual JSON parsing failed: {e}")
-                result_json = None
-        
-        # Strategy 3: If still no JSON, try to extract just the key parts
-        if not result_json:
-            logger.warning(f"🔍 All JSON parsing strategies failed, using manual classification")
-            logger.warning(f"🔍 Full rewriter response: {result_text}")
-            return classify_query_manually(latest)
-        
-        # Log the classification for debugging
-        logger.info(f"🔍 Query Classification:")
-        logger.info(f"🔍   Original: '{latest}'")
-        logger.info(f"🔍   Rewritten: '{result_json.get('rewritten_prompt', latest)}'")
-        logger.info(f"🔍   Type: {result_json.get('query_type', 'unknown')}")
-        logger.info(f"🔍   Language: {result_json.get('ques_lang', 'unknown')}")
-        logger.info(f"🔍   Needs MCP: {result_json.get('needs_mcp', False)}")
-        
+        # Simple fallback
         return {
-            "rewritten_prompt": result_json.get("rewritten_prompt", latest),
-            "ques_lang": result_json.get("ques_lang", "english"),
-            "query_type": result_json.get("query_type", "general_chat"),
-            "needs_mcp": result_json.get("needs_mcp", False),
-            "needs_embeddings": result_json.get("needs_embeddings", True),
-            "search_parameters": result_json.get("search_parameters", {})
+            "rewritten_prompt": latest,
+            "ques_lang": "english",
+            "query_type": "general_chat",
+            "needs_mcp": False,
+            "needs_embeddings": True,
+            "search_parameters": {}
         }
             
     except Exception as e:
-        logger.warning("Enhanced query rewrite failed: %s", str(e))
-        logger.warning("Full exception details:", exc_info=True)
-        return classify_query_manually(latest)
-
-def classify_query_manually(query: str) -> dict:
-    """Manual fallback classification for when AI fails"""
-    query_lower = query.lower()
-    
-    # Simple keyword-based classification
-    if any(word in query_lower for word in ['trimmer', 'product', 'buy', 'price', 'cost', 'have', 'sell', 'available']):
-        query_type = "product_search"
-        needs_mcp = True
-        needs_embeddings = False
-        
-        # Extract price if mentioned (support both "under 2000" and "under INR 2000")
-        search_params = {}
-        price_patterns = [
-            r'under\s+(\d+)',  # "under 2000"
-            r'under\s+inr\s+(\d+)',  # "under INR 2000"
-            r'inr\s+(\d+)',  # "INR 2000"
-            r'rs\.?\s*(\d+)',  # "Rs 2000" or "Rs. 2000"
-            r'₹\s*(\d+)'  # "₹ 2000"
-        ]
-        
-        for pattern in price_patterns:
-            price_match = re.search(pattern, query_lower)
-            if price_match:
-                search_params["price_range"] = {"max": int(price_match.group(1))}
-                break
-        
-        # Extract product features
-        features = []
-        if 'trimmer' in query_lower:
-            features.append('trimmer')
-        if 'beard' in query_lower:
-            features.append('beard')
-        if 'razor' in query_lower:
-            features.append('razor')
-        
-        if features:
-            search_params["product_features"] = features
-            search_params["category"] = features[0]  # Use first feature as category
-        
-    elif any(word in query_lower for word in ['order', 'track', 'delivery', 'shipped']):
-        query_type = "order_status"
-        needs_mcp = True
-        needs_embeddings = False
-        search_params = {}
-        
-    elif any(word in query_lower for word in ['policy', 'return', 'shipping', 'warranty']):
-        query_type = "policy_question"
-        needs_mcp = True
-        needs_embeddings = False
-        search_params = {}
-        
-    else:
-        query_type = "general_chat"
-        needs_mcp = False
-        needs_embeddings = True
-        search_params = {}
-    
-    logger.info(f"🔍 Manual Classification: '{query}' → {query_type}")
-    
-    return {
-        "rewritten_prompt": query,  # Keep original
-        "ques_lang": "english",
-        "query_type": query_type,
-        "needs_mcp": needs_mcp,
-        "needs_embeddings": needs_embeddings,
-        "search_parameters": search_params
-    }
+        logger.warning(f"Query rewrite failed: {str(e)}")
+        return {
+            "rewritten_prompt": latest,
+            "ques_lang": "english", 
+            "query_type": "general_chat",
+            "needs_mcp": False,
+            "needs_embeddings": True,
+            "search_parameters": {}
+        }
 
 # JWT Token Authentication Decorator
 def require_widget_token(f):
     """Decorator to require valid JWT token"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Handle preflight requests
         if request.method == 'OPTIONS':
             return jsonify({'status': 'ok'}), 200
             
         auth_header = request.headers.get('Authorization', '')
         
         if not auth_header.startswith('Bearer '):
-            logger.warning("Missing or invalid authorization header")
             return jsonify({
                 "error": "Authorization required",
                 "message": "Valid token required for chat access"
@@ -931,77 +733,18 @@ def require_widget_token(f):
         payload = jwt_service.verify_token(token)
         
         if not payload:
-            logger.warning("Invalid JWT token provided")
             return jsonify({
                 "error": "Invalid token",
                 "message": "Token is invalid or expired"
             }), 401
         
-        # Add token payload to request for use in route
         request.token_data = payload
         return f(*args, **kwargs)
     
     return decorated_function
 
-def generate_intelligent_follow_up(mcp_response, user_query, intent):
-    """Generate context-aware follow-up prompts based on MCP results"""
-    products = mcp_response.get('products', [])
-    pagination = mcp_response.get('pagination', {})
-    available_filters = mcp_response.get('available_filters', [])
-    
-    # No products found
-    if not products:
-        return {
-            "follow_up": True,
-            "follow_up_prompt": "I couldn't find exactly what you're looking for. Could you describe what you need in more detail?"
-        }
-    
-    # Products found but many more available
-    total_count = pagination.get('totalCount', 0)
-    if pagination.get('hasNextPage') and total_count > 10:
-        return {
-            "follow_up": True, 
-            "follow_up_prompt": f"I found {len(products)} products from {total_count} total. Would you like to see more or filter these results?"
-        }
-    
-    # Perfect amount of products - ask for refinement
-    if len(products) <= 3:
-        return {
-            "follow_up": True,
-            "follow_up_prompt": "Do any of these catch your eye, or would you like me to find something more specific?"
-        }
-    
-    # Many products - suggest filtering based on available filters
-    if len(products) > 3 and available_filters:
-        filter_suggestions = []
-        for filter_group in available_filters[:2]:
-            filter_type = filter_group.get('type', '')
-            if filter_type == 'productType':
-                filter_suggestions.append("product type")
-            elif filter_type == 'vendor':
-                filter_suggestions.append("brand")
-            elif filter_type == 'variantOption':
-                filter_suggestions.append("style or color")
-            elif filter_type == 'price':
-                filter_suggestions.append("price range")
-        
-        if filter_suggestions:
-            suggestion_text = " or ".join(filter_suggestions[:2])
-            return {
-                "follow_up": True,
-                "follow_up_prompt": f"I found several great options! Would you like me to filter by {suggestion_text}?"
-            }
-    
-    # Default follow-up for other cases
-    return {
-        "follow_up": True,
-        "follow_up_prompt": "Would you like more details about any of these products?"
-    }
-################################### NEW FILES ################################
-# Replace these functions in chat_shopify.py
-
 def map_shopify_products_to_carousel(mcp_response, max_products=3):
-    """Map Shopify MCP response to unified contract product_carousel format"""
+    """Map Shopify MCP response to product carousel format"""
     if not mcp_response or not mcp_response.get('products'):
         return []
     
@@ -1009,246 +752,102 @@ def map_shopify_products_to_carousel(mcp_response, max_products=3):
     carousel_products = []
     
     for product in products[:max_products]:
-        # Extract PRODUCT ID for product page links
-        product_id = product.get('id')  # e.g., "gid://shopify/Product/7920309207194"
+        product_id = product.get('id')
         
-        # Extract VARIANT ID for cart operations
+        # Extract variant ID for cart operations
         variant_id = None
         variants = product.get('variants', [])
         
         if variants:
-            # Get first available variant
             for variant in variants:
                 if variant.get('available', True):
-                    variant_gid = variant.get('variant_id')  # e.g., "gid://shopify/ProductVariant/45832173879526"
+                    variant_gid = variant.get('variant_id')
                     if variant_gid and 'ProductVariant/' in variant_gid:
-                        # Extract numeric variant ID
-                        variant_id = variant_gid.split('ProductVariant/')[-1]  # e.g., "45832173879526"
+                        variant_id = variant_gid.split('ProductVariant/')[-1]
                         break
             
-            # Fallback to first variant if none available
             if not variant_id and variants:
                 variant_gid = variants[0].get('variant_id')
                 if variant_gid and 'ProductVariant/' in variant_gid:
                     variant_id = variant_gid.split('ProductVariant/')[-1]
         
-        # Skip product if no variant found
         if not variant_id:
-            logger.warning(f"🛒 No variant ID found for product: {product.get('title')}")
             continue
         
-        # Extract price information
+        # Format price
         price = product.get('price', 0)
         currency = product.get('currency', 'INR')
         
-        # Format price
         if currency == 'INR':
             price_display = f"₹{price:,.0f}"
         else:
             price_display = f"{currency} {price}"
         
         carousel_product = {
-            "id": product_id,  # ← KEEP Product GID for product page links
-            "variant_id": variant_id,         # ← ADD numeric variant ID for cart
+            "id": product_id,
+            "variant_id": variant_id,
             "title": product.get('title', 'Unknown Product'),
             "price": price_display,
-            "image": product.get('image', ''),  # ← FIX: Use 'image' field from MCP
+            "image": product.get('image', ''),
             "handle": product.get('url', '').split('/')[-1] if product.get('url') else '',
-            "url": product.get('url', ''),    # ← ADD direct product URL
+            "url": product.get('url', ''),
             "available": product.get('inStock', True)
         }
         
         carousel_products.append(carousel_product)
-        logger.info(f"🛒 Mapped product: {product.get('title')} → Product ID: {product_id}, Variant ID: {variant_id}")
     
     return carousel_products
 
 def format_products_for_llm(mcp_products):
-    """Format MCP products for LLM context with structured product data"""
+    """Format MCP products for LLM context"""
     if not mcp_products:
         return ""
     
-    product_data = []
-    for i, product in enumerate(mcp_products[:6]):  # Limit to 6 products
-        # FIXED: Extract data from MCP format correctly
+    context_lines = [f"\n**🛍️ AVAILABLE PRODUCTS:**"]
+    
+    for i, product in enumerate(mcp_products[:6]):
         price = product.get('price', 0)
         currency = product.get('currency', 'INR')
         
-        # Format price properly
         if currency == 'INR':
             price_display = f"₹{price:,.0f}"
-        elif currency == 'USD':
-            price_display = f"${price:.2f}"
         else:
             price_display = f"{currency} {price}"
         
-        product_info = {
-            "id": product.get('id', f"product_{i}"),
-            "title": product.get('title', 'Unknown Product'),
-            "price": price,
-            "price_display": price_display,
-            "currency": currency,
-            "inStock": product.get('inStock', True),
-            "description": product.get('description', ''),
-            "image": product.get('image', ''),
-            "url": product.get('url', '')
-        }
-        product_data.append(product_info)
-    
-    # Create structured context for LLM
-    context_lines = [f"\n**🛍️ AVAILABLE PRODUCTS FOR RECOMMENDATION:**"]
-    
-    for i, product in enumerate(product_data):
-        # Stock status
-        stock_status = "✅ In Stock" if product['inStock'] else "❌ Out of Stock"
+        stock_status = "✅ In Stock" if product.get('inStock', True) else "❌ Out of Stock"
         
         context_lines.append(f"""
         Product {i+1}:
-        - ID: {product['id']}
-        - Title: {product['title']}
-        - Price: {product['price_display']}
+        - ID: {product.get('id')}
+        - Title: {product.get('title')}
+        - Price: {price_display}
         - Stock: {stock_status}
-        - Description: {product['description'][:100]}...
-        - Image: {product['image']}
-        - URL: {product['url']}""")
+        - Description: {product.get('description', '')[:100]}...
+        - Image: {product.get('image', '')}
+        - URL: {product.get('url', '')}""")
     
-    context_lines.append(f"\n**IMPORTANT:** When recommending products, include them in 'product_carousel' array with exact ID, title, price format from above.")
+    context_lines.append(f"\n**IMPORTANT:** Include products in 'product_carousel' array with exact data from above.")
     
     return "\n".join(context_lines)
 
-# REMOVE these functions as they're designed for different data format:
-# - get_shopify_primary_image() 
-# - format_shopify_price()
-
-# Replace generate_dynamic_quick_replies to be simpler
-def generate_dynamic_quick_replies(mcp_response, intent, query_type):
-    """Generate contextual quick replies from MCP context"""
-    quick_replies = []
-    
-    # Add product-specific actions if we have products
-    if mcp_response.get('products'):
-        quick_replies.extend(["Add to Cart", "See details"])
-        
-        # Add pagination option if more results available
-        pagination = mcp_response.get('pagination', {})
-        if pagination.get('hasNextPage') and len(quick_replies) < 3:
-            quick_replies.append("See more")
-    
-    # Fallback options based on intent
-    if len(quick_replies) < 2:
-        if intent in ['ProductInquiry', 'PricingInquiry']:
-            fallback_options = ["Browse products", "Get help", "Contact sales"]
-        elif intent == 'SupportRequest':
-            fallback_options = ["Email support", "Live chat", "Call us"]
-        else:
-            fallback_options = ["Help me choose", "See options", "Contact support"]
-        
-        # Add fallback options to fill up to 3 total
-        for option in fallback_options:
-            if len(quick_replies) < 3 and option not in quick_replies:
-                quick_replies.append(option)
-    
-    return quick_replies[:3]  # Ensure max 3 replies
-
-# Add debugging function to log product data transformation
-def debug_product_mapping(mcp_context, carousel_products):
-    """Debug function to log product mapping"""
-    logger.info(f"🔍 ===== PRODUCT MAPPING DEBUG =====")
-    
-    mcp_products = mcp_context.get('products', [])
-    logger.info(f"🔍 MCP Products Count: {len(mcp_products)}")
-    
-    for i, product in enumerate(mcp_products[:3]):
-        logger.info(f"🔍 MCP Product {i+1}:")
-        logger.info(f"🔍   - ID: {product.get('id')}")
-        logger.info(f"🔍   - Title: {product.get('title')}")
-        logger.info(f"🔍   - Price: {product.get('price')} {product.get('currency')}")
-        logger.info(f"🔍   - InStock: {product.get('inStock')}")
-        logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
-    
-    logger.info(f"🔍 Carousel Products Count: {len(carousel_products)}")
-    
-    for i, product in enumerate(carousel_products):
-        logger.info(f"🔍 Carousel Product {i+1}:")
-        logger.info(f"🔍   - ID: {product.get('id')}")
-        logger.info(f"🔍   - Title: {product.get('title')}")
-        logger.info(f"🔍   - Price: {product.get('price')}")
-        logger.info(f"🔍   - Available: {product.get('available')}")
-        logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
-    
-    logger.info(f"🔍 ===== PRODUCT MAPPING DEBUG END =====")
-
-# Add this function to chat_shopify.py:
-
-def validate_llm_products(llm_response, filtered_products):
-    """Validate that LLM used the correct products and fix if needed"""
-    if not llm_response.get("product_carousel") or not filtered_products:
-        return llm_response
-    
-    llm_products = llm_response["product_carousel"]
-    provided_product_ids = {p["id"] for p in filtered_products}
-    
-    logger.info(f"🔍 Validating LLM products...")
-    logger.info(f"🔍 Expected product IDs: {provided_product_ids}")
-    
-    valid_products = []
-    invalid_count = 0
-    
-    for i, llm_product in enumerate(llm_products):
-        llm_id = llm_product.get("id", "")
-        logger.info(f"🔍 LLM Product {i+1} ID: {llm_id}")
-        
-        if llm_id in provided_product_ids:
-            # Valid product - LLM used correct data
-            valid_products.append(llm_product)
-            logger.info(f"🔍 ✅ Valid product: {llm_product.get('title')}")
-        else:
-            # Invalid product - LLM hallucinated
-            invalid_count += 1
-            logger.warning(f"🔍 ❌ Invalid product (hallucinated): {llm_product.get('title')} with ID {llm_id}")
-            
-            # Replace with correct product if available
-            if i < len(filtered_products):
-                correct_product = filtered_products[i]
-                valid_products.append(correct_product)
-                logger.info(f"🔍 🔧 Replaced with correct product: {correct_product.get('title')}")
-    
-    if invalid_count > 0:
-        logger.warning(f"🔍 Fixed {invalid_count} hallucinated products")
-        llm_response["product_carousel"] = valid_products
-        
-        # Update content to reflect correct products
-        if valid_products:
-            product_names = [p["title"] for p in valid_products[:2]]
-            if len(product_names) == 1:
-                llm_response["content"] = f"<b>Great choice!</b> We have the {product_names[0]} available under ₹2000!"
-            else:
-                llm_response["content"] = f"<b>Perfect!</b> Here are our {' and '.join(product_names)} under ₹2000!"
-    
-    return llm_response
-
-
-# Enhanced /shopify/ask endpoint
+# Main ask endpoint
 @shopify_chat_bp.route('/ask', methods=['POST', 'OPTIONS'])
 @require_widget_token
-def shopify_ask_endpoint():  # Rename function too for clarity
+def shopify_ask_endpoint():
     """
-    Advanced chat endpoint with JWT authentication, semantic search, 
-    lead capture, analytics tracking, and comprehensive logging
+    Main chat endpoint with hardcoded prompts and minimal logging
     """
-    # Handle preflight
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
     
     try:
-        # Get token data from middleware
+        # Get token data
         site_id = request.token_data['site_id']
         token_domain = request.token_data['domain']
         plan_type = request.token_data.get('plan_type', 'free')
         
-        # Check rate limits based on plan
+        # Check rate limits
         if not rate_limit_service.check_rate_limit(site_id, plan_type):
-            logger.warning(f"Rate limit exceeded for site_id: {site_id}")
             return jsonify({
                 "error": "Rate limit exceeded",
                 "message": "Too many requests. Please wait before trying again."
@@ -1261,10 +860,6 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 "error": "Invalid request",
                 "message": "JSON data required"
             }), 400
-        
-        # Log incoming request
-        logger.debug("Incoming /ask request: %s", json.dumps(data, indent=2))
-        sentry_sdk.set_extra("incoming_request_data", data)
         
         # Extract required fields
         messages = data.get("messages")
@@ -1279,68 +874,20 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 "message": "messages, page_url, and session_id are required"
             }), 400
         
-        # Additional domain validation from page_url
+        # Domain validation
         request_domain = domain_service.extract_domain_from_url(page_url)
         if not domain_service.domains_match(request_domain, token_domain):
-            logger.warning(f"Domain mismatch - Token: {token_domain}, Request: {request_domain}")
             return jsonify({
                 "error": "Domain mismatch",
                 "message": "Request domain doesn't match token domain"
             }), 403
         
-        # Set up analytics tracking
-        distinct_id = user_id or session_id or "anonymous"
-        
-        # Track with Mixpanel if available
-        if mp:
-            mp.track(distinct_id, "chat_history_received", {
-                "site_id": site_id,
-                "session_id": session_id,
-                "chat_history": messages
-            })
-        
-        # Set Sentry context
-        with sentry_sdk.configure_scope() as scope:
-            scope.set_tag("site_id", site_id)
-            scope.set_tag("session_id", session_id)
-            scope.set_user({"id": session_id})
-        
-        # Initialize analytic flags
-        lang = None
-        confidence = None
-        intent_label = None
-        tokens_used = None
-        follow_up = None
-        follow_up_prompt = None
-        sentiment = None
-        compliance_flag = None
-        
-        # 🆕 LOAD DYNAMIC PROMPTS AND MODELS
-        prompts_config = get_site_prompts_and_models(site_id)
-
-        logger.info(f"🎯 Using prompts config for site {site_id}:")
-        logger.info(f"🎯   - Rewriter model: {prompts_config['rewriter_model']}")
-        logger.info(f"🎯   - Main model: {prompts_config['main_model']}")
-        logger.info(f"🎯   - Cache version: {prompts_config['cache_version']}")
-        logger.info(f"🎯   - Has custom system prompt: {bool(prompts_config['system_prompt'] != SYSTEM_PROMPT)}")
-        logger.info(f"🎯   - Has custom shopify instructions: {bool(prompts_config['shopify_instructions'])}")
-
         # Get latest user message
         latest_user_msg = next((m for m in reversed(messages) if m["role"] == "user"), None)
         if not latest_user_msg:
             return jsonify({"error": "No user message found"}), 400
         
         latest_user_query = latest_user_msg["content"]
-        sentry_sdk.set_extra("user_query", latest_user_query)
-        
-        # Track user message
-        if mp:
-            mp.track(distinct_id, "user_message_received", {
-                "site_id": site_id,
-                "session_id": session_id,
-                "page_url": page_url,
-                "message": latest_user_query
-            })
         
         # Insert user message into chat history
         insert_chat_message(site_id, session_id, user_id, page_url, "user", latest_user_query)
@@ -1348,23 +895,8 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         # Prepare context for query rewriting
         recent_history = [m for m in messages if m["role"] in ("user", "assistant", "yuno")][-6:]
         
-        # Track rewriter context
-        if mp:
-            mp.track(distinct_id, "rewriter_context", {
-                "site_id": site_id,
-                "session_id": session_id,
-                "original_query": latest_user_query,
-                "context_used": [
-                    {
-                        "role": "You" if m["role"] in ("assistant", "yuno") else "User",
-                        "content": m["content"]
-                    } for m in recent_history
-                ]
-            })
-        
-
-        # NEW: Rewrite query with context, detect language, and determine routing
-        rewrite_result = rewrite_query_with_context_and_language(recent_history, latest_user_query, prompts_config)
+        # Rewrite query with context and detect language/intent
+        rewrite_result = rewrite_query_with_context_and_language(recent_history, latest_user_query)
         rewritten_query = rewrite_result["rewritten_prompt"]
         detected_language = rewrite_result["ques_lang"]
         query_type = rewrite_result.get("query_type", "general_chat")
@@ -1376,7 +908,6 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         is_shopify = False
         shopify_domain = None
         try:
-            # Get site configuration
             site_info = site_model.get_site_by_id(site_id)
             if site_info and site_info.get('custom_config'):
                 is_shopify = site_info['custom_config'].get('is_shopify', False)
@@ -1384,35 +915,8 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         except Exception as e:
             logger.warning(f"Could not fetch site config for {site_id}: {e}")
         
-        if mp:
-            mp.track(distinct_id, "query_rewritten", {
-                "site_id": site_id,
-                "session_id": session_id,
-                "original_query": latest_user_query,
-                "detected_language": detected_language,
-                "rewritten_query": rewritten_query,
-                "chat_context_used": [
-                    {
-                        "role": "You" if m["role"] in ("assistant", "yuno") else "User",
-                        "content": m["content"]
-                    }
-                    for m in recent_history
-                ]
-            })
-        
-        sentry_sdk.set_extra("rewritten_query", rewritten_query)
-        
         # Generate embedding for semantic search
         embedding = get_embedding(rewritten_query)
-        sentry_sdk.set_extra("embedding_vector_partial", embedding[:5])
-        
-        if mp:
-            mp.track(distinct_id, "embedding_generated", {
-                "original_query": latest_user_query,
-                "rewritten_query": rewritten_query,
-                "site_id": site_id,
-                "embedding_preview": str(embedding[:5])
-            })
         
         # Initialize context holders
         matches = []
@@ -1421,230 +925,76 @@ def shopify_ask_endpoint():  # Rename function too for clarity
         # Perform semantic search if needed
         if needs_embeddings:
             matches = semantic_search(embedding, site_id)
-            sentry_sdk.set_extra("vector_search_results", matches[:3])
-            
-            if mp:
-                mp.track(distinct_id, "vector_search_performed", {
-                    "site_id": site_id,
-                    "session_id": session_id,
-                    "match_count": len(matches),
-                    "top_matches": matches[:2]
-                })
-        else:
-            logger.info(f"Skipping embeddings search for query type: {query_type}")
-
-
-
-        # ===== ENHANCED MCP INTEGRATION WITH DETAILED LOGGING =====
-        mcp_tools = []
-        mcp_tool_result = None
-        mcp_tool_call_info = None
-        if is_shopify and needs_mcp and shopify_domain:
-            logger.info("🛍️ ===== SHOPIFY MCP INTEGRATION START =====")
-            logger.info(f"🛍️ Shopify store detected: {shopify_domain}")
-            logger.info(f"🛍️ Query type: {query_type}")
-            logger.info(f"🛍️ Original user query: '{latest_user_query}'")
-            logger.info(f"🛍️ Rewritten query: '{rewritten_query}'")
-            logger.info(f"🛍️ Search parameters: {json.dumps(search_parameters, indent=2)}")
-            logger.info(f"🛍️ Needs embeddings: {needs_embeddings}")
-            logger.info(f"🛍️ User language: {detected_language}")
-            try:
-                logger.info(f"🛍️ Attempting MCP connection...")
-                mcp_domain = shopify_domain
-                shopify_mcp_service.connect_sync(mcp_domain)
-                logger.info(f"🛍️ MCP connection established")
-
-                # === NEW: List available tools from MCP ===
-                mcp_tools = shopify_mcp_service.list_tools()
-                logger.info(f"🛠️ MCP tools listed: {len(mcp_tools)} tools available")
-
-                # Add tool list to rewriter prompt context
-                tool_list_context = f"\n\nAVAILABLE MCP TOOLS (with input schemas):\n{json.dumps(mcp_tools, indent=2)}\n\n"
-
-                # Build rewriter prompt with tool list
-                rewriter_prompt_with_tools = prompts_config['rewriter_prompt'] + tool_list_context
-
-                # Use the same chat_log and latest as before
-                chat_log = "\n".join([
-                    f"{'You' if m['role'] in ['assistant', 'yuno', 'bot'] else 'User'}: {m['content']}"
-                    for m in recent_history
-                ])
-                enhanced_prompt = rewriter_prompt_with_tools.format(
-                    chat_log=chat_log,
-                    latest=latest_user_query
-                )
-                logger.info(f"🔍 Rewriter prompt length (with tools): {len(enhanced_prompt)} characters")
-
-                # Call the rewriter LLM with tool list
-                response = openai_client.chat.completions.create(
-                    model=prompts_config['rewriter_model'],
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a precise query classifier. Focus on the user's actual intent, not assumed context. Product questions should always be classified as product_search. Respond with ONLY valid JSON. If a tool from the list is relevant, specify the tool name and arguments to call."
-                        },
-                        {
-                            "role": "user",
-                            "content": enhanced_prompt
-                        }
-                    ],
-                    temperature=0.1
-                )
-                result_text = response.choices[0].message.content.strip()
-                logger.info(f"🔍 Raw rewriter response (with tools): {result_text[:200]}...")
-                # Try to extract JSON
-                import re as _re
-                match = _re.search(r'\{.*\}', result_text, _re.DOTALL)
-                if match:
-                    try:
-                        result_json = json.loads(match.group(0))
-                    except json.JSONDecodeError:
-                        result_json = None
-                else:
-                    result_json = None
-                # Fallback to manual classification if needed
-                if not result_json:
-                    result_json = classify_query_manually(latest_user_query)
-                # Extract tool call info if present
-                tool_name = result_json.get("tool_name")
-                tool_args = result_json.get("tool_args")
-                mcp_tool_call_info = {"tool_name": tool_name, "tool_args": tool_args} if tool_name else None
-                # If tool_name is specified, call the tool
-                if tool_name and tool_args is not None:
-                    logger.info(f"🛠️ Calling MCP tool: {tool_name} with args: {tool_args}")
-                    mcp_tool_result = shopify_mcp_service._call_mcp_tool(tool_name, tool_args)
-                    logger.info(f"🛠️ MCP tool call result: {str(mcp_tool_result)[:200]}...")
-                # Use rewritten_prompt, etc. from result_json
-                rewritten_query = result_json.get("rewritten_prompt", latest_user_query)
-                detected_language = result_json.get("ques_lang", "english")
-                query_type = result_json.get("query_type", "general_chat")
-                needs_mcp = result_json.get("needs_mcp", False)
-                needs_embeddings = result_json.get("needs_embeddings", True)
-                search_parameters = result_json.get("search_parameters", {})
-            except Exception as e:
-                logger.error(f"🛍️ MCP tool listing/calling exception: {e}")
-                sentry_sdk.capture_exception(e)
-        # ... existing code ...
-        # ===== CONTEXT BUILDING WITH DETAILED LOGGING =====
-        # Add MCP tool result to context if available
-        if mcp_tool_result:
-            context = f"\n\nMCP TOOL RESULT:\n{json.dumps(mcp_tool_result, indent=2)}\n" + context
-        # ... existing code ...
-
-        # ===== CONTEXT BUILDING WITH DETAILED LOGGING =====
-        logger.info(f"🔗 ===== CONTEXT BUILDING START =====")
-        logger.info(f"🔗 Embedding matches: {len(matches)}")
-        logger.info(f"🔗 MCP products: {len(mcp_context.get('products', []))}")
-        logger.info(f"🔗 MCP policies: {bool(mcp_context.get('policies'))}")
         
+        # MCP integration for Shopify stores
+        if is_shopify and needs_mcp and shopify_domain:
+            try:
+                shopify_mcp_service.connect_sync(shopify_domain)
+                
+                # Get MCP tools and call appropriate one
+                mcp_tools = shopify_mcp_service.list_tools()
+                
+                # Simple tool selection based on query type
+                if query_type == "product_search":
+                    # Call product search tool with search parameters
+                    tool_args = {
+                        "query": rewritten_query,
+                        "limit": 6
+                    }
+                    if search_parameters.get('price_range'):
+                        tool_args.update(search_parameters['price_range'])
+                    
+                    mcp_context = shopify_mcp_service._call_mcp_tool("search_products", tool_args) or {}
+                
+            except Exception as e:
+                logger.error(f"MCP integration failed: {e}")
+
         # Build context from search results and MCP data
         embedding_context = "\n\n".join(
             match.get("detail") or match.get("text") or "" 
             for match in matches if match
         )
-        logger.info(f"🔗 Embedding context length: {len(embedding_context)} characters")
 
-        # Enhanced product context for Shopify with detailed logging
+        # Build product context for Shopify
         product_context = ""
-        structured_product_data = None
-        carousel_products = []
         filtered_products = []
         
         if mcp_context.get('products'):
-            logger.info(f"🔗 Building product context from {len(mcp_context['products'])} products...")
-            
-            # Generate carousel products first
+            # Generate carousel products
             carousel_products = map_shopify_products_to_carousel(mcp_context)
             
-            # Filter products by price if user specified budget
+            # Filter products by price if specified
             if search_parameters.get('price_range', {}).get('max'):
                 max_budget = search_parameters['price_range']['max']
-                logger.info(f"🔍 Filtering products by budget: ₹{max_budget}")
                 
-                filtered_products = []
                 for product in carousel_products:
-                    # Extract numeric price from formatted string
                     price_str = product.get('price', '0')
-                    price_num = 0
-                    
-                    # Handle different price formats
-                    if price_str.startswith('₹'):
-                        try:
+                    try:
+                        if price_str.startswith('₹'):
                             price_num = float(price_str.replace('₹', '').replace(',', ''))
-                        except ValueError:
-                            logger.warning(f"🔍 ⚠️ Could not parse price: {price_str}")
-                    elif price_str.startswith('INR') or price_str.startswith('Rs'):
-                        try:
-                            price_match = re.search(r'(\d+(?:,\d+)*)', price_str)
-                            if price_match:
-                                price_num = float(price_match.group(1).replace(',', ''))
-                        except (ValueError, AttributeError):
-                            logger.warning(f"🔍 ⚠️ Could not parse price: {price_str}")
-                    else:
-                        try:
+                        else:
                             price_num = float(price_str.replace(',', ''))
-                        except ValueError:
-                            logger.warning(f"🔍 ⚠️ Could not parse price: {price_str}")
-                    
-                    if price_num <= max_budget:
-                        filtered_products.append(product)
-                        logger.info(f"🔍 ✅ Included: {product['title']} at ₹{price_num}")
-                    else:
-                        logger.info(f"🔍 ❌ Excluded: {product['title']} at ₹{price_num} (over budget)")
+                        
+                        if price_num <= max_budget:
+                            filtered_products.append(product)
+                    except ValueError:
+                        continue
                 
-                logger.info(f"🔍 Final filtered products: {len(filtered_products)}")
-                
-                # Fallback: if no products match budget, show cheapest ones
-                if len(filtered_products) == 0 and len(carousel_products) > 0:
-                    logger.info(f"🔍 No products within budget, showing cheapest options")
-                    # Sort by price and take the cheapest 3
-                    sorted_products = sorted(carousel_products, key=lambda x: float(x.get('price', '0').replace('₹', '').replace(',', '')))
-                    filtered_products = sorted_products[:3]
-                    logger.info(f"🔍 Showing {len(filtered_products)} cheapest products instead")
+                # Fallback to cheapest if none match budget
+                if not filtered_products and carousel_products:
+                    filtered_products = sorted(carousel_products, 
+                        key=lambda x: float(x.get('price', '0').replace('₹', '').replace(',', '')))[:3]
             else:
                 filtered_products = carousel_products
             
-            logger.info(f"🔍 Final filtered products: {len(filtered_products)}")
-            
-            # Create both display context and structured data for LLM
+            # Create product context for LLM
             product_context = format_products_for_llm(mcp_context['products'])
-            structured_product_data = mcp_context['products']  # Keep raw data for LLM access
-            
-            logger.info(f"🔗 Product context built: {len(product_context)} characters")
-
-        # Policy context (if available)
-        policy_context = ""
-        if mcp_context.get('policies'):
-            logger.info(f"🔗 Building policy context...")
-            
-            policy_lines = []
-            policies = mcp_context['policies']
-            
-            if isinstance(policies, dict):
-                for policy_type, policy_data in policies.items():
-                    logger.debug(f"🔗 Processing policy: {policy_type}")
-                    
-                    if isinstance(policy_data, dict) and policy_data.get('content'):
-                        content = policy_data['content'][:200] + "..." if len(policy_data['content']) > 200 else policy_data['content']
-                        policy_lines.append(f"**{policy_type}**: {content}")
-                    elif isinstance(policy_data, str):
-                        content = policy_data[:200] + "..." if len(policy_data) > 200 else policy_data
-                        policy_lines.append(f"**{policy_type}**: {content}")
-            
-            if policy_lines:
-                policy_context = "\n\n**📋 Store Policies:**\n" + "\n".join(policy_lines)
-                logger.info(f"🔗 Policy context built: {len(policy_context)} characters")
 
         # Combine all contexts
-        context = embedding_context + product_context + policy_context
-        logger.info(f"🔗 Total context length: {len(context)} characters")
-        logger.info(f"🔗 Context breakdown: embeddings={len(embedding_context)}, products={len(product_context)}, policies={len(policy_context)}")
-        logger.info(f"🔗 ===== CONTEXT BUILDING END =====")
-
-
+        context = embedding_context + product_context
 
         # Prepare messages for OpenAI
-        updated_messages = [{"role": "system", "content": prompts_config['system_prompt']}]
+        updated_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         
         # Add recent conversation history
         recent_turns = [m for m in messages if m["role"] in ("user", "yuno", "assistant")][-4:]
@@ -1654,153 +1004,64 @@ def shopify_ask_endpoint():  # Rename function too for clarity
                 "content": m["content"]
             })
         
-        
+        # Add language instruction if not English
         language_instruction = ""
         if detected_language != "english":
             language_map = {
-                "spanish": "Spanish",
-                "hindi": "Hindi", 
-                "bengali": "Bengali",
-                "arabic": "Arabic",
-                "french": "French",
-                "german": "German",
-                "portuguese": "Portuguese",
-                "italian": "Italian"
+                "spanish": "Spanish", "hindi": "Hindi", "bengali": "Bengali",
+                "arabic": "Arabic", "french": "French", "german": "German",
+                "portuguese": "Portuguese", "italian": "Italian"
             }
             lang_name = language_map.get(detected_language, detected_language.title())
-            language_instruction = f"\n\nIMPORTANT: The user wrote their message in {lang_name}. You MUST respond in {lang_name}. Write your entire 'content' field response in {lang_name}."
+            language_instruction = f"\n\nIMPORTANT: Respond in {lang_name}."
 
-
-        # Build focused prompt with enhanced MCP intelligence
+        # Build focused prompt
         context_label = "Relevant information" if is_shopify else "Relevant website content"
         focused_prompt = f"{latest_user_query}\n\n{context_label}:\n{context}{language_instruction}"
 
-        # Add explicit product instructions if we have filtered products
+        # Add product instructions if available
         if filtered_products:
             product_instructions = f"""
-\n\n🚨 CRITICAL PRODUCT INSTRUCTION 🚨
-You have {len(filtered_products)} products available that match the user's query. You MUST include these products in your response using the 'product_carousel' field.
-\nPRODUCTS TO INCLUDE IN CAROUSEL:
+
+🚨 CRITICAL: Include these {len(filtered_products)} products in 'product_carousel':
 """
             for i, product in enumerate(filtered_products[:3]):
                 product_instructions += f"""
-Product {i+1}:
-- ID: {product.get('id')}
-- Title: {product.get('title')}
-- Price: {product.get('price')}
-- Available: {product.get('available')}
-- Image: {product.get('image')}
-- URL: {product.get('url')}
+Product {i+1}: ID={product.get('id')}, Title={product.get('title')}, Price={product.get('price')}
 """
-            product_instructions += f"""
-\nIMPORTANT: You MUST include these products in your 'product_carousel' array. Do not make up products or use placeholder data.\n"""
             focused_prompt += product_instructions
 
-        # TEMPORARY LOG: Log the focused prompt sent to the LLM (truncated)
-        logger.info(f"🔍 [TEMP] LLM focused prompt (first 1000 chars): {focused_prompt[:1000]}")
-        if len(focused_prompt) > 1000:
-            logger.info(f"🔍 [TEMP] LLM focused prompt (truncated, total length: {len(focused_prompt)})")
-
-        # Enhanced Shopify-specific instructions with MCP intelligence
-        if is_shopify and mcp_context:
-            shopify_instructions = "\n\nYou have access to real-time product information and store policies."
-            
-            if filtered_products:
-                # Generate dynamic quick replies based on available filters
-                dynamic_quick_replies = generate_dynamic_quick_replies(
-                    mcp_context, intent_label, query_type
-                )
-                
-                # Generate intelligent follow-up based on result context
-                follow_up_data = generate_intelligent_follow_up(
-                    mcp_context, latest_user_query, intent_label
-                )
-                
-                # Log the generated intelligence
-                logger.info(f"🛍️ Generated {len(filtered_products)} carousel products")
-                logger.info(f"🛍️ Generated quick replies: {dynamic_quick_replies}")
-                logger.info(f"🛍️ Generated follow-up: {follow_up_data}")
-                
-                shopify_instructions += prompts_config['shopify_instructions']
-                
-            if mcp_context.get('policies'):
-                shopify_instructions += f"""
-
-                📋 STORE POLICIES AVAILABLE:
-                You have access to store policy information including:
-                {list(mcp_context['policies'].keys()) if isinstance(mcp_context.get('policies'), dict) else 'Policy data available'}
-                """
-            
-            focused_prompt += shopify_instructions
-
-        # 🆕 ADD CUSTOM PROMPT IF EXISTS
-        if prompts_config['custom_prompt']:
+        # Add custom prompt if exists
+        custom_prompt = get_site_custom_prompt(site_id)
+        if custom_prompt:
             updated_messages.append({
                 "role": "system",
-                "content": prompts_config['custom_prompt']
+                "content": custom_prompt
             })
 
-        # Add this check to see what the LLM actually received
-        logger.info(f"🔍 LLM received prompt length: {len(focused_prompt)} characters")
-        if filtered_products:
-            logger.info(f"🔍 Products available for LLM: {len(filtered_products)}")
-            for i, product in enumerate(filtered_products[:3]):
-                logger.info(f"🔍 Product {i+1} for LLM: {product.get('title')} - {product.get('price')} - ID: {product.get('id')}")
-        
-        # Log the final enhanced prompt
-        logger.info(f"🔗 Enhanced prompt built with MCP intelligence")
-        logger.info(f"🔗 Prompt length: {len(focused_prompt)} characters")
-        if filtered_products:
-            logger.info(f"🔗 Includes {len(filtered_products)} products for carousel")
-        if mcp_context.get('available_filters'):
-            logger.info(f"🔗 Includes {len(mcp_context['available_filters'])} filter groups")
-
-        
-        # Add final system prompt to ensure JSON response
+        # Add final system prompt for JSON response
         updated_messages.append({
             "role": "system",
-            "content": prompts_config['system_prompt_2']  # Dynamic!
-
+            "content": SYSTEM_PROMPT_2
         })
-        # Add final language prompt to ensure JSON response
+        
         updated_messages.append({
-            "role": "system",
-            "content": language_instruction
+            "role": "user",
+            "content": focused_prompt
         })
         
-        sentry_sdk.set_extra("gpt_prompt", focused_prompt)
-        
-        if mp:
-            mp.track(distinct_id, "gpt_prompt_sent", {
-                "site_id": site_id,
-                "session_id": session_id,
-                "full_prompt": focused_prompt
-            })
-        
-        # Call OpenAI (v1.0+ syntax)
+        # Call OpenAI with hardcoded model
         completion = openai_client.chat.completions.create(
-            model=prompts_config['main_model'],  # 🆕 Dynamic model
+            model=HARDCODED_MAIN_MODEL,
             messages=updated_messages,
             temperature=0.5
         )
         
         raw_reply = completion.choices[0].message.content.strip()
-        sentry_sdk.set_extra("gpt_raw_reply", raw_reply)
         
-        # Add debugging for LLM response
-        logger.info(f"🔍 LLM Raw Response: {raw_reply[:500]}...")
-        
-        if mp:
-            mp.track(distinct_id, "gpt_response_received", {
-                "site_id": site_id,
-                "session_id": session_id,
-                "raw_reply": raw_reply
-            })
-
-        # Extract JSON from response with better error handling
+        # Extract JSON from response
         match = re.search(r"\{.*\}", raw_reply, re.DOTALL)
         if not match:
-            logger.error(f"Model returned invalid JSON: {raw_reply}")
             return jsonify({
                 "error": "Model returned invalid JSON.", 
                 "raw_reply": raw_reply
@@ -1808,149 +1069,29 @@ Product {i+1}:
 
         try:
             reply_json = json.loads(match.group(0))
-            
-            # Add debugging for parsed response
-            logger.info(f"🔍 Parsed LLM Response:")
-            logger.info(f"🔍   - Has content: {bool(reply_json.get('content'))}")
-            logger.info(f"🔍   - Has product_carousel: {bool(reply_json.get('product_carousel'))}")
-            logger.info(f"🔍   - Product count: {len(reply_json.get('product_carousel', []))}")
-            logger.info(f"🔍   - Intent: {reply_json.get('intent')}")
-            logger.info(f"🔍   - Confidence: {reply_json.get('answer_confidence')}")
-            
         except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing failed: {e}, Raw: {raw_reply}")
             return jsonify({
                 "error": "Invalid JSON response from AI",
                 "raw_reply": raw_reply
             }), 500
 
-        # ADD THIS VALIDATION HERE:
-        if is_shopify and filtered_products:
-            reply_json = validate_llm_products(reply_json, filtered_products)
-            
-            # Force include product carousel if LLM didn't include it but we have products
-            if not reply_json.get("product_carousel") and filtered_products:
-                logger.info(f"🔍 LLM didn't include product carousel, forcing inclusion of {len(filtered_products)} products")
-                reply_json["product_carousel"] = filtered_products[:3]  # Limit to 3 products
-                
-                # Update content to mention the products
-                if not reply_json.get("content"):
-                    reply_json["content"] = "Here are some great options for you:"
-                elif "product" not in reply_json["content"].lower():
-                    reply_json["content"] += " Here are some products that match your needs:"
-            
-            # Add debugging for final response
-            logger.info(f"🔍 Final Response After Validation:")
-            logger.info(f"🔍   - Has content: {bool(reply_json.get('content'))}")
-            logger.info(f"🔍   - Has product_carousel: {bool(reply_json.get('product_carousel'))}")
-            logger.info(f"🔍   - Product count: {len(reply_json.get('product_carousel', []))}")
-            if reply_json.get('product_carousel'):
-                for i, product in enumerate(reply_json['product_carousel']):
-                    logger.info(f"🔍   - Product {i+1}: {product.get('title')} - {product.get('price')} - ID: {product.get('id')}")
+        # Force include product carousel if we have products but LLM didn't include them
+        if is_shopify and filtered_products and not reply_json.get("product_carousel"):
+            reply_json["product_carousel"] = filtered_products[:3]
+            if not reply_json.get("content"):
+                reply_json["content"] = "Here are some great options for you:"
 
         # Validate required fields
         if not reply_json.get("content"):
-            logger.error(f"Missing required 'content' field in response: {reply_json}")
             reply_json["content"] = "I'm here to help! How can I assist you today?"
 
         assistant_content = reply_json.get("content", raw_reply)
-
-        # Log enhanced features usage
-        if reply_json.get("product_carousel"):
-            logger.info(f"🛍️ Response includes {len(reply_json['product_carousel'])} products in carousel")
-            
-        if reply_json.get("quick_replies"):
-            logger.info(f"💬 Response includes {len(reply_json['quick_replies'])} quick replies: {reply_json['quick_replies']}")
-            
-        if reply_json.get("follow_up"):
-            logger.info(f"🔄 Response includes follow-up: {reply_json.get('follow_up_prompt')}")
-
-# Add this logging right after the LLM response is processed, around line 1650:
-
-        # Enhanced logging to debug product issues
-        if reply_json.get("product_carousel"):
-            logger.info(f"🔍 ===== LLM PRODUCT RESPONSE DEBUG =====")
-            llm_products = reply_json.get("product_carousel", [])
-            logger.info(f"🔍 LLM returned {len(llm_products)} products:")
-            
-            for i, product in enumerate(llm_products):
-                logger.info(f"🔍 LLM Product {i+1}:")
-                logger.info(f"🔍   - ID: {product.get('id')}")
-                logger.info(f"🔍   - Title: {product.get('title')}")
-                logger.info(f"🔍   - Price: {product.get('price')}")
-                logger.info(f"🔍   - Available: {product.get('available')}")
-                logger.info(f"🔍   - Image: {product.get('image', '')[:50]}...")
-            
-            # Compare with original MCP data
-            mcp_products = mcp_context.get('products', [])[:3]
-            logger.info(f"🔍 Original MCP data (first 3):")
-            for i, product in enumerate(mcp_products):
-                logger.info(f"🔍 MCP Product {i+1}:")
-                logger.info(f"🔍   - ID: {product.get('id')}")
-                logger.info(f"🔍   - Title: {product.get('title')}")
-                logger.info(f"🔍   - Price: {product.get('price')} {product.get('currency')}")
-                logger.info(f"🔍   - InStock: {product.get('inStock')}")
-            
-            logger.info(f"🔍 ===== LLM PRODUCT RESPONSE DEBUG END =====")
-
-# Also add this validation after JSON parsing:
-
-        # Validate product data quality
-        if reply_json.get("product_carousel"):
-            products = reply_json["product_carousel"]
-            for i, product in enumerate(products):
-                # Check for required fields
-                required_fields = ['id', 'title', 'price']
-                missing_fields = [field for field in required_fields if not product.get(field)]
-                
-                if missing_fields:
-                    logger.warning(f"🔍 Product {i+1} missing fields: {missing_fields}")
-                    logger.warning(f"🔍 Product data: {product}")
-                
-                # Check for placeholder or generic data
-                title = product.get('title', '')
-                if any(placeholder in title.lower() for placeholder in ['unknown', 'placeholder', 'example']):
-                    logger.warning(f"🔍 Product {i+1} has placeholder title: {title}")
-                
-                # Check price format
-                price = product.get('price', '')
-                if not price or price == '$0.00' or price == '₹0':
-                    logger.warning(f"🔍 Product {i+1} has invalid price: {price}")
-        
-        # Add this check to see what the LLM actually received
-        logger.info(f"🔍 LLM received prompt length: {len(focused_prompt)} characters")
-        if "PRODUCTS TO INCLUDE IN CAROUSEL" in focused_prompt:
-            # Extract the JSON section that was sent to LLM
-            start = focused_prompt.find("PRODUCTS TO INCLUDE IN CAROUSEL")
-            end = focused_prompt.find("SUGGESTED QUICK_REPLIES", start)
-            if start != -1 and end != -1:
-                products_section = focused_prompt[start:end]
-                logger.info(f"🔍 Products section sent to LLM:")
-                logger.info(f"🔍 {products_section[:500]}...")  # First 500 chars
-       
-        # Extract analytic flags from response
-        lang = reply_json.get("lang")
-        confidence = reply_json.get("answer_confidence")
-        intent_label = reply_json.get("intent")
-        tokens_used = reply_json.get("tokens_used")
-        follow_up = reply_json.get("follow_up")
-        follow_up_prompt = reply_json.get("follow_up_prompt")
-        sentiment = reply_json.get("user_sentiment")
-        compliance_flag = reply_json.get("compliance_red_flag")
         
         # Insert assistant response into chat history
         insert_chat_message(
             site_id, session_id, user_id, page_url,
             "assistant", assistant_content,
-            raw_json_output=json.dumps(reply_json),
-            lang=detected_language,  # Store detected language
-            confidence=confidence,
-            intent=intent_label,
-            tokens_used=tokens_used,
-            follow_up=follow_up,
-            follow_up_prompt=follow_up_prompt,
-            sentiment=sentiment,
-            compliance_flag=compliance_flag
+            raw_json_output=json.dumps(reply_json)
         )
         
         # Handle lead capture
@@ -1968,81 +1109,25 @@ Product {i+1}:
                 "intent": lead.get("intent")
             }
             insert_lead(lead_data)
-            
-            if mp:
-                mp.track(distinct_id, "lead_captured", lead_data)
         
         # Update rate limit counter
         rate_limit_service.increment_usage(site_id, plan_type)
-        
-        # Final tracking
-        sentry_sdk.set_extra("frontend_response_payload", reply_json)
-        
-        # Add debugging for final response being sent
-        logger.info(f"🔍 ===== FINAL RESPONSE BEING SENT =====")
-        logger.info(f"🔍 Response keys: {list(reply_json.keys())}")
-        logger.info(f"🔍 Has product_carousel: {bool(reply_json.get('product_carousel'))}")
-        logger.info(f"🔍 Product count: {len(reply_json.get('product_carousel', []))}")
-        logger.info(f"🔍 Content preview: {reply_json.get('content', '')[:100]}...")
-        if reply_json.get('product_carousel'):
-            logger.info(f"🔍 Products being sent:")
-            for i, product in enumerate(reply_json['product_carousel']):
-                logger.info(f"🔍   {i+1}. {product.get('title')} - {product.get('price')} - ID: {product.get('id')}")
-        logger.info(f"🔍 ===== END FINAL RESPONSE =====")
-
-        if mp:
-            mp.track(distinct_id, "bot_reply_sent", {
-                "session_id": session_id,
-                "site_id": site_id,
-                "content": assistant_content,
-                "lead_triggered": reply_json.get("leadTriggered", False),
-                "is_shopify": is_shopify,
-                "query_type": query_type,
-                "used_mcp": needs_mcp and is_shopify,
-                "used_embeddings": needs_embeddings
-            })
-        
-        # Track enhanced features usage
-        if mp:
-            mp.track(distinct_id, "enhanced_features_used", {
-                "site_id": site_id,
-                "session_id": session_id,
-                "has_product_carousel": bool(reply_json.get("product_carousel")),
-                "product_count": len(reply_json.get("product_carousel", [])),
-                "has_quick_replies": bool(reply_json.get("quick_replies")),
-                "quick_replies_count": len(reply_json.get("quick_replies", [])),
-                "has_follow_up": reply_json.get("follow_up", False),
-                "intent": reply_json.get("intent"),
-                "confidence": reply_json.get("answer_confidence"),
-                "is_shopify": is_shopify,
-                "used_mcp_products": bool(mcp_context.get('products'))
-            })
 
         return jsonify(reply_json)
         
     except Exception as e:
-        # Updated exception handling for OpenAI v1.0+
+        # Basic error handling
         if "rate_limit" in str(e).lower():
-            logger.error("OpenAI rate limit exceeded")
             return jsonify({
                 "error": "Service temporarily unavailable",
                 "message": "Please try again in a moment"
             }), 503
         elif "invalid" in str(e).lower():
-            logger.error(f"OpenAI invalid request: {str(e)}")
             return jsonify({
                 "error": "Invalid request",
                 "message": "Unable to process your message"
             }), 400
         else:
-            sentry_sdk.capture_exception(e)
-            if mp:
-                mp.track(distinct_id, "server_error", {
-                    "site_id": site_id,
-                    "error": str(e),
-                    "lang": lang,
-                    "intent": intent_label
-                })
             logger.exception("Exception in /ask")
             return jsonify({
                 "error": "Internal server error",
@@ -2052,15 +1137,13 @@ Product {i+1}:
 @shopify_chat_bp.route('/cart/add', methods=['POST', 'OPTIONS'])
 @require_widget_token
 def add_to_cart():
-    """Add product to cart using direct Shopify cart API"""
+    """Add product to cart using Shopify cart API"""
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
     
     try:
-        # Get token data from middleware
         site_id = request.token_data['site_id']
         
-        # Get request data
         data = request.get_json()
         if not data:
             return jsonify({"error": "JSON data required"}), 400
@@ -2071,8 +1154,6 @@ def add_to_cart():
         if not merchandise_id:
             return jsonify({"error": "merchandise_id required"}), 400
         
-        logger.info(f"🛒 Cart request: {merchandise_id} x {quantity}")
-        
         # Get site configuration for Shopify domain
         site_info = site_model.get_site_by_id(site_id)
         if not site_info or not site_info.get('custom_config'):
@@ -2082,314 +1163,46 @@ def add_to_cart():
         if not shopify_domain:
             return jsonify({"error": "Shopify domain not configured"}), 404
         
-        # Use direct Shopify cart API
-        try:
-            cart_url = f"https://{shopify_domain}/cart/add.js"
-            
-            # Prepare cart data
-            cart_data = {
-                "id": int(merchandise_id),  # Shopify expects numeric variant ID
-                "quantity": quantity
-            }
-            
-            logger.info(f"🛒 Calling Shopify cart API: {cart_url}")
-            logger.info(f"🛒 Cart data: {cart_data}")
-            
-            # Make request to Shopify cart API
-            response = requests.post(
-                cart_url,
-                json=cart_data,
-                headers={
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
-                timeout=10
-            )
-            
-            logger.info(f"🛒 Shopify cart API response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                cart_result = response.json()
-                logger.info(f"🛒 ✅ Cart operation successful")
-                logger.info(f"🛒 Cart response: {cart_result}")
-                
-                # Extract relevant data from Shopify response
-                product_title = cart_result.get('title', 'Product')
-                product_url = cart_result.get('url', '')
-                checkout_url = f"https://{shopify_domain}/cart"
-                
-                return jsonify({
-                    "success": True,
-                    "content": f'✅ Added "{product_title}" to your cart!<br><br><a href="{checkout_url}" target="_blank" style="background: var(--accent); color: #fff; padding: 10px 16px; border-radius: 8px; text-decoration: none; display: inline-block; font-weight: 600; margin-top: 8px;">🛒 View Cart & Checkout</a>',
-                    "cart": cart_result,
-                    "checkout_url": checkout_url,
-                    "merchandise_id": merchandise_id,
-                    "quantity": quantity,
-                    "product_title": product_title,
-                    "product_url": product_url
-                })
-            else:
-                error_text = response.text
-                logger.error(f"🛒 ❌ Shopify cart API failed: {response.status_code} - {error_text}")
-                return jsonify({
-                    "error": "Cart update failed",
-                    "message": f"Shopify API error: {response.status_code}",
-                    "details": error_text
-                }), 400
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"🛒 Shopify cart API request failed: {str(e)}")
-            return jsonify({
-                "error": "Cart service unavailable",
-                "message": f"Network error: {str(e)}"
-            }), 503
+        # Call Shopify cart API
+        cart_url = f"https://{shopify_domain}/cart/add.js"
+        cart_data = {
+            "id": int(merchandise_id),
+            "quantity": quantity
+        }
         
+        response = requests.post(
+            cart_url,
+            json=cart_data,
+            headers={
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            cart_result = response.json()
+            product_title = cart_result.get('title', 'Product')
+            checkout_url = f"https://{shopify_domain}/cart"
+            
+            return jsonify({
+                "success": True,
+                "content": f'✅ Added "{product_title}" to your cart!<br><br><a href="{checkout_url}" target="_blank" style="background: var(--accent); color: #fff; padding: 10px 16px; border-radius: 8px; text-decoration: none; display: inline-block; font-weight: 600; margin-top: 8px;">🛒 View Cart & Checkout</a>',
+                "cart": cart_result,
+                "checkout_url": checkout_url,
+                "merchandise_id": merchandise_id,
+                "quantity": quantity,
+                "product_title": product_title
+            })
+        else:
+            return jsonify({
+                "error": "Cart update failed",
+                "message": f"Shopify API error: {response.status_code}"
+            }), 400
+                
     except Exception as e:
-        logger.exception(f"🛒 Cart endpoint failed: {str(e)}")
+        logger.exception(f"Cart endpoint failed: {str(e)}")
         return jsonify({
             "error": "Internal server error",
             "message": "Cart operation failed"
-        }), 500
-
-
-# Health check endpoint
-@shopify_chat_bp.route('/health', methods=['GET', 'OPTIONS'])
-def shopify_chat_health():
-    """Health check for chat service"""
-    return jsonify({
-        "status": "healthy",
-        "service": "chat",
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
-# Debug endpoints
-@shopify_chat_bp.route('/debug', methods=['GET', 'OPTIONS'])
-def shopify_debug_components():
-    """Debug endpoint to test all components and environment"""
-    debug_info = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "env_vars": {},
-        "imports": {},
-        "services": {},
-        "connections": {},
-        "errors": []
-    }
-    
-    # Check environment variables
-    env_vars_to_check = [
-        'SUPABASE_URL', 'SUPABASE_KEY', 'OPENAI_API_KEY', 
-        'JWT_SECRET', 'REDIS_URL', 'MIXPANEL_TOKEN', 'SENTRY_DSN'
-    ]
-    
-    for var in env_vars_to_check:
-        value = os.getenv(var)
-        if value:
-            # Mask sensitive values
-            if 'KEY' in var or 'SECRET' in var or 'DSN' in var:
-                debug_info["env_vars"][var] = f"SET (***{value[-4:]})"
-            else:
-                debug_info["env_vars"][var] = f"SET ({value[:20]}...)"
-        else:
-            debug_info["env_vars"][var] = "MISSING"
-    
-    # Test OpenAI connection
-    try:
-        if OPENAI_API_KEY:
-            if OPENAI_API_KEY.startswith('sk-'):
-                debug_info["connections"]["openai"] = "API Key format OK"
-            else:
-                debug_info["connections"]["openai"] = "Invalid API key format"
-        else:
-            debug_info["connections"]["openai"] = "No API key"
-    except Exception as e:
-        debug_info["connections"]["openai"] = f"ERROR: {str(e)}"
-        debug_info["errors"].append(f"OpenAI: {str(e)}")
-    
-    # Test Supabase connection
-    try:
-        if SUPABASE_URL and SUPABASE_KEY:
-            from supabase import create_client
-            supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-            debug_info["connections"]["supabase"] = "Client created OK"
-        else:
-            debug_info["connections"]["supabase"] = "Missing credentials"
-    except Exception as e:
-        debug_info["connections"]["supabase"] = f"ERROR: {str(e)}"
-        debug_info["errors"].append(f"Supabase: {str(e)}")
-    
-    # Summary
-    debug_info["summary"] = {
-        "total_errors": len(debug_info["errors"]),
-        "critical_missing": [var for var, status in debug_info["env_vars"].items() 
-                           if status == "MISSING" and var in ['OPENAI_API_KEY', 'SUPABASE_URL', 'SUPABASE_KEY']],
-        "status": "READY" if len(debug_info["errors"]) == 0 else "ISSUES_FOUND"
-    }
-    
-    return jsonify(debug_info)
-
-@shopify_chat_bp.route('/debug/ask-simple', methods=['POST', 'OPTIONS'])
-@require_widget_token
-def shopify_debug_ask_simple():
-    """Simplified ask endpoint with detailed error logging"""
-    debug_steps = []
-    
-    try:
-        # Step 1: Get request data
-        debug_steps.append("1. Getting request data...")
-        data = request.get_json()
-        debug_steps.append(f"1. ✅ Request data received: {list(data.keys()) if data else 'None'}")
-        
-        if not data:
-            return jsonify({
-                "error": "No JSON data",
-                "debug_steps": debug_steps
-            }), 400
-        
-        # Step 2: Extract token data
-        debug_steps.append("2. Extracting token data...")
-        site_id = request.token_data.get('site_id')
-        token_domain = request.token_data.get('domain')
-        plan_type = request.token_data.get('plan_type', 'free')
-        debug_steps.append(f"2. ✅ Token data: site_id={site_id}, domain={token_domain}, plan={plan_type}")
-        
-        # Step 3: Test rate limiting
-        debug_steps.append("3. Testing rate limiting...")
-        try:
-            rate_check = rate_limit_service.check_rate_limit(site_id, plan_type)
-            debug_steps.append(f"3. ✅ Rate limit check: {rate_check}")
-        except Exception as e:
-            debug_steps.append(f"3. ❌ Rate limit error: {str(e)}")
-            return jsonify({
-                "error": "Rate limiting failed",
-                "debug_steps": debug_steps,
-                "rate_limit_error": str(e)
-            }), 500
-        
-        # Step 4: Validate required fields
-        debug_steps.append("4. Validating required fields...")
-        required_fields = ['messages', 'page_url', 'session_id']
-        missing_fields = [field for field in required_fields if field not in data]
-        
-        if missing_fields:
-            debug_steps.append(f"4. ❌ Missing fields: {missing_fields}")
-            return jsonify({
-                "error": "Missing required fields",
-                "missing_fields": missing_fields,
-                "debug_steps": debug_steps
-            }), 400
-        
-        debug_steps.append("4. ✅ All required fields present")
-        
-        # Step 5: Test OpenAI
-        debug_steps.append("5. Testing OpenAI...")
-        try:
-            if not OPENAI_API_KEY:
-                raise Exception("OPENAI_API_KEY not set")
-            
-            debug_steps.append("5. ✅ OpenAI key set")
-            
-            # Test with a simple completion (v1.0+ syntax)
-            test_response = openai_client.chat.completions.create(
-                model="gpt-4o-mini-2024-07-18",
-                messages=[{"role": "user", "content": "Say 'test successful'"}],
-                max_tokens=10
-            )
-            
-            debug_steps.append("5. ✅ OpenAI API call successful")
-            
-        except Exception as e:
-            debug_steps.append(f"5. ❌ OpenAI error: {str(e)}")
-            return jsonify({
-                "error": "OpenAI API failed",
-                "debug_steps": debug_steps,
-                "openai_error": str(e)
-            }), 500
-        
-        # Step 6: Return success
-        debug_steps.append("6. ✅ All tests passed!")
-        
-        return jsonify({
-            "status": "success",
-            "message": "All components working correctly",
-            "debug_steps": debug_steps,
-            "test_data": {
-                "site_id": site_id,
-                "messages_count": len(data.get("messages", [])),
-                "openai_test": test_response.choices[0].message.content if 'test_response' in locals() else "Not tested"
-            }
-        })
-        
-    except Exception as e:
-        debug_steps.append(f"❌ FATAL ERROR: {str(e)}")
-        logger.exception("Debug ask simple failed")
-        
-        return jsonify({
-            "error": "Internal server error",
-            "error_type": type(e).__name__,
-            "error_message": str(e),
-            "debug_steps": debug_steps
-        }), 500
-
-@shopify_chat_bp.route('/debug/rewriter', methods=['POST', 'OPTIONS'])
-@require_widget_token
-def shopify_debug_rewriter():
-    """Debug endpoint specifically for testing the rewriter function"""
-    if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'}), 200
-    
-    try:
-        # Get token data from middleware
-        site_id = request.token_data['site_id']
-        
-        # Get request data
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "JSON data required"}), 400
-        
-        messages = data.get("messages", [])
-        if not messages:
-            return jsonify({"error": "messages array required"}), 400
-        
-        # Get latest user message
-        latest_user_msg = next((m for m in reversed(messages) if m["role"] == "user"), None)
-        if not latest_user_msg:
-            return jsonify({"error": "No user message found"}), 400
-        
-        latest_user_query = latest_user_msg["content"]
-        
-        # Load prompts config
-        prompts_config = get_site_prompts_and_models(site_id)
-        
-        # Prepare context for query rewriting
-        recent_history = [m for m in messages if m["role"] in ("user", "assistant", "yuno")][-6:]
-        
-        logger.info(f"🔍 ===== REWRITER DEBUG START =====")
-        logger.info(f"🔍 Site ID: {site_id}")
-        logger.info(f"🔍 Latest query: '{latest_user_query}'")
-        logger.info(f"🔍 History length: {len(recent_history)}")
-        logger.info(f"🔍 Rewriter model: {prompts_config['rewriter_model']}")
-        
-        # Test the rewriter
-        rewrite_result = rewrite_query_with_context_and_language(recent_history, latest_user_query, prompts_config)
-        
-        logger.info(f"🔍 ===== REWRITER DEBUG END =====")
-        
-        return jsonify({
-            "status": "success",
-            "original_query": latest_user_query,
-            "rewrite_result": rewrite_result,
-            "debug_info": {
-                "site_id": site_id,
-                "rewriter_model": prompts_config['rewriter_model'],
-                "history_length": len(recent_history),
-                "prompt_length": len(prompts_config['rewriter_prompt'])
-            }
-        })
-        
-    except Exception as e:
-        logger.exception("Debug rewriter failed")
-        return jsonify({
-            "error": "Internal server error",
-            "error_type": type(e).__name__,
-            "error_message": str(e)
-        }), 500
+        }), 500        }), 500

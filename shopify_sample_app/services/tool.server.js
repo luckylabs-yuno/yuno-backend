@@ -1,6 +1,6 @@
 /**
  * Tool Service
- * Manages tool execution and processing
+ * Manages tool execution and processing for OpenAI function calling
  */
 import { saveMessage } from "../db.server";
 import AppConfig from "./config.server";
@@ -12,12 +12,6 @@ import AppConfig from "./config.server";
 export function createToolService() {
   /**
    * Handles a tool error response
-   * @param {Object} toolUseResponse - The error response from the tool
-   * @param {string} toolName - The name of the tool
-   * @param {string} toolUseId - The ID of the tool use request
-   * @param {Array} conversationHistory - The conversation history
-   * @param {Function} sendMessage - Function to send messages to the client
-   * @param {string} conversationId - The conversation ID
    */
   const handleToolError = async (toolUseResponse, toolName, toolUseId, conversationHistory, sendMessage, conversationId) => {
     if (toolUseResponse.error.type === "auth_required") {
@@ -32,26 +26,33 @@ export function createToolService() {
 
   /**
    * Handles a successful tool response
-   * @param {Object} toolUseResponse - The response from the tool
-   * @param {string} toolName - The name of the tool
-   * @param {string} toolUseId - The ID of the tool use request
-   * @param {Array} conversationHistory - The conversation history
-   * @param {Array} productsToDisplay - Array to add product results to
-   * @param {string} conversationId - The conversation ID
    */
   const handleToolSuccess = async (toolUseResponse, toolName, toolUseId, conversationHistory, productsToDisplay, conversationId) => {
     // Check if this is a product search result
-    if (toolName === AppConfig.tools.productSearchName) {
+    if (toolName === 'search_shop_catalog') {
       productsToDisplay.push(...processProductSearchResult(toolUseResponse));
     }
 
-    addToolResultToHistory(conversationHistory, toolUseId, toolUseResponse.content, conversationId);
+    // Format the tool result content properly
+    let toolResultContent;
+    if (toolUseResponse.content && Array.isArray(toolUseResponse.content)) {
+      // Extract text from content array
+      const textContent = toolUseResponse.content
+        .filter(item => item.type === 'text')
+        .map(item => item.text)
+        .join('\n');
+      toolResultContent = textContent;
+    } else {
+      toolResultContent = typeof toolUseResponse.content === 'string' 
+        ? toolUseResponse.content 
+        : JSON.stringify(toolUseResponse.content);
+    }
+
+    addToolResultToHistory(conversationHistory, toolUseId, toolResultContent, conversationId);
   };
 
   /**
    * Processes product search results
-   * @param {Object} toolUseResponse - The response from the tool
-   * @returns {Array} Processed product data
    */
   const processProductSearchResult = (toolUseResponse) => {
     try {
@@ -59,25 +60,29 @@ export function createToolService() {
       let products = [];
 
       if (toolUseResponse.content && toolUseResponse.content.length > 0) {
-        const content = toolUseResponse.content[0].text;
+        // Extract text content from the response
+        const content = toolUseResponse.content.find(item => item.type === 'text')?.text;
 
-        try {
-          let responseData;
-          if (typeof content === 'object') {
-            responseData = content;
-          } else if (typeof content === 'string') {
-            responseData = JSON.parse(content);
+        if (content) {
+          try {
+            let responseData;
+            if (typeof content === 'object') {
+              responseData = content;
+            } else if (typeof content === 'string') {
+              responseData = JSON.parse(content);
+            }
+
+            if (responseData?.products && Array.isArray(responseData.products)) {
+              products = responseData.products
+                .slice(0, AppConfig.tools.maxProductsToDisplay || 10)
+                .map(formatProductData);
+
+              console.log(`Found ${products.length} products to display`);
+            }
+          } catch (e) {
+            console.error("Error parsing product data:", e);
+            console.log("Raw content:", content);
           }
-
-          if (responseData?.products && Array.isArray(responseData.products)) {
-            products = responseData.products
-              .slice(0, AppConfig.tools.maxProductsToDisplay)
-              .map(formatProductData);
-
-            console.log(`Found ${products.length} products to display`);
-          }
-        } catch (e) {
-          console.error("Error parsing product data:", e);
         }
       }
 
@@ -90,8 +95,6 @@ export function createToolService() {
 
   /**
    * Formats a product data object
-   * @param {Object} product - Raw product data
-   * @returns {Object} Formatted product data
    */
   const formatProductData = (product) => {
     const price = product.price_range
@@ -111,33 +114,33 @@ export function createToolService() {
   };
 
   /**
-   * Adds a tool result to the conversation history
-   * @param {Array} conversationHistory - The conversation history
-   * @param {string} toolUseId - The ID of the tool use request
-   * @param {string} content - The content of the tool result
-   * @param {string} conversationId - The conversation ID
+   * Adds a tool result to the conversation history in OpenAI format
+   * Note: Tool results are saved to DB but NOT included in truncated history
+   * to maintain efficient token usage
    */
   const addToolResultToHistory = async (conversationHistory, toolUseId, content, conversationId) => {
+    // Create OpenAI-formatted tool result message
     const toolResultMessage = {
-      role: 'user',
-      content: [{
-        type: "tool_result",
-        tool_use_id: toolUseId,
-        content: content
-      }]
+      role: 'tool',
+      tool_call_id: toolUseId,
+      content: typeof content === 'string' ? content : JSON.stringify(content)
     };
 
-    // Add to in-memory history
-    conversationHistory.push(toolResultMessage);
-
-    // Save to database with special format to indicate tool result
+    // Save to database for record keeping
     if (conversationId) {
       try {
-        await saveMessage(conversationId, 'user', JSON.stringify(toolResultMessage.content));
+        await saveMessage(conversationId, 'tool', JSON.stringify({
+          tool_call_id: toolUseId,
+          content: content
+        }));
       } catch (error) {
         console.error('Error saving tool result to database:', error);
       }
     }
+
+    // Note: We don't add tool results to conversationHistory here
+    // because our truncated history excludes tool calls/results for efficiency
+    // Only user/assistant messages are kept in the working history
   };
 
   return {
