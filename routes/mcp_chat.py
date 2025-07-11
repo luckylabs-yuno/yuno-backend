@@ -153,12 +153,13 @@ def chat_with_mcp():
         # Parse response outputs for MCP tool usage
         if hasattr(response, 'output') and response.output:
             for output_item in response.output:
-                if output_item.get('type') == 'mcp_call':
+                # Use attribute access, not .get()
+                if hasattr(output_item, 'type') and output_item.type == 'mcp_call':
                     tools_used.append({
-                        "tool_name": output_item.get('name'),
-                        "server_label": output_item.get('server_label'),
-                        "status": "success" if not output_item.get('error') else "error",
-                        "error": output_item.get('error')
+                        "tool_name": getattr(output_item, 'name', None),
+                        "server_label": getattr(output_item, 'server_label', None),
+                        "status": "success" if not getattr(output_item, 'error', None) else "error",
+                        "error": getattr(output_item, 'error', None)
                     })
                     mcp_calls.append(output_item)
         
