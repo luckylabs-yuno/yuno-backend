@@ -167,7 +167,7 @@ def chat_with_mcp():
         response_data = {
             "response": response.output_text,
             "tools_used": tools_used,
-            "mcp_calls": mcp_calls,
+            "mcp_calls": [vars(call) for call in mcp_calls],
             "status": "success",
             "model_used": req_data.model,
             "timestamp": datetime.utcnow().isoformat(),
